@@ -68,3 +68,5 @@ jobs:
       - run: npm test
         working-directory: npm
       - run: cargo publish --dry-run --locked
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/triad-cargo-publish
