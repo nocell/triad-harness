@@ -1,0 +1,126 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            target: aarch64-apple-darwin
+            arch: arm64
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+            arch: x64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+      - name: Verify release version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          version="${RELEASE_TAG#v}"
+          cargo_version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')"
+          npm_version="$(node -p "require('./npm/package.json').version")"
+          test "$version" = "$cargo_version"
+          test "$version" = "$npm_version"
+      - name: Test
+        run: cargo test --all-targets --locked
+      - name: Build release archive
+        env:
+          TARGET: ${{ matrix.target }}
+          ARCH: ${{ matrix.arch }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          MACOSX_DEPLOYMENT_TARGET: "13.0"
+        run: |
+          cargo build --release --locked --target "$TARGET"
+          stage="dist/stage-$ARCH"
+          asset="triad-$RELEASE_TAG-darwin-$ARCH.tar.gz"
+          mkdir -p "$stage"
+          cp "target/$TARGET/release/triad" "$stage/triad"
+          chmod 755 "$stage/triad"
+          "$stage/triad" --version
+          tar -C "$stage" -czf "dist/$asset" triad
+          cd dist
+          shasum -a 256 "$asset" > "$asset.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: triad-${{ matrix.arch }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+
+  github-release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v5
+        with:
+          pattern: triad-*
+          path: dist
+          merge-multiple: true
+      - name: Prepare checksums and Homebrew formula
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          cat dist/*.sha256 > dist/SHA256SUMS
+          scripts/render-homebrew-formula.sh "$RELEASE_TAG" dist/SHA256SUMS dist/triad.rb "$REPOSITORY"
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" dist/*.tar.gz dist/SHA256SUMS dist/triad.rb --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$RELEASE_TAG" dist/*.tar.gz dist/SHA256SUMS dist/triad.rb --verify-tag --generate-notes --title "Triad $RELEASE_TAG" --repo "$GITHUB_REPOSITORY"
+          fi
+
+  npm:
+    needs: github-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - run: npm install --global npm@latest
+      - name: Verify package version
+        working-directory: npm
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: test "${RELEASE_TAG#v}" = "$(node -p "require('./package.json').version")"
+      - run: npm ci
+        working-directory: npm
+      - run: npm test
+        working-directory: npm
+      - name: Publish npm package
+        working-directory: npm
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

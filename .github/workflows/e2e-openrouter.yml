@@ -1,0 +1,43 @@
+name: Live OpenRouter E2E
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: live-openrouter-e2e
+  cancel-in-progress: false
+
+jobs:
+  review-oracle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - name: Check live-test secret
+        id: secret
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          if [ -n "$OPENROUTER_API_KEY" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::OPENROUTER_API_KEY is not configured; live model call skipped"
+          fi
+      - name: Run deterministic fake-provider pipeline
+        run: cargo test --test e2e_fake
+      - name: Review real public PR fixture through OpenRouter
+        if: steps.secret.outputs.available == 'true'
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENROUTER_MODEL: ${{ vars.OPENROUTER_E2E_MODEL || 'openai/gpt-5.4-mini' }}
+        run: node scripts/e2e-openrouter.mjs

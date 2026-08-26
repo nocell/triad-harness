@@ -1,0 +1,38 @@
+{
+  "name": "triad-harness",
+  "version": "0.1.0",
+  "description": "Subscription-backed frontier-model MapReduce code review harness",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nocell/triad-harness.git"
+  },
+  "homepage": "https://github.com/nocell/triad-harness#readme",
+  "bugs": "https://github.com/nocell/triad-harness/issues",
+  "bin": {
+    "triad": "bin/triad.js",
+    "triad-harness": "bin/triad.js"
+  },
+  "files": [
+    "bin/triad.js",
+    "LICENSE",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "keywords": [
+    "ai",
+    "code-review",
+    "cli",
+    "mapreduce"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/",
+    "provenance": true
+  }
+}

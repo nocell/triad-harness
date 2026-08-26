@@ -1,4 +1,4 @@
 /target/
 /.triad-test/
 *.log
-
+/npm/*.tgz

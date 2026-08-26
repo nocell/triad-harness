@@ -20,3 +20,22 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test --all-targets
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - run: npm ci
+        working-directory: npm
+      - run: npm test
+        working-directory: npm
+      - run: npm pack --dry-run
+        working-directory: npm
+      - name: Verify public PR E2E fixture
+        run: node scripts/e2e-openrouter.mjs --fixture-only
+      - name: Verify Homebrew formula renderer
+        run: |
+          temporary="$(mktemp -d)"
+          printf '%064d  triad-v0.1.0-darwin-arm64.tar.gz\n' 1 > "$temporary/SHA256SUMS"
+          printf '%064d  triad-v0.1.0-darwin-x64.tar.gz\n' 2 >> "$temporary/SHA256SUMS"
+          scripts/render-homebrew-formula.sh v0.1.0 "$temporary/SHA256SUMS" "$temporary/triad.rb"
+          ruby -c "$temporary/triad.rb"

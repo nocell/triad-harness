@@ -21,11 +21,27 @@ Reviewers are strictly passive. Their prompts forbid editing or deleting files, 
 
 ## Install
 
+### Cargo
+
 ```bash
 git clone https://github.com/nocell/triad-harness.git
 cd triad-harness
 cargo install --path .
 triad doctor --refresh
+```
+
+### npm / npx
+
+```bash
+npx triad-harness --help
+```
+
+The npm launcher downloads the matching macOS release binary and verifies its SHA-256 checksum before execution.
+
+### Homebrew
+
+```bash
+brew install nocell/tap/triad
 ```
 
 Cursor CLI is currently optional. Triad will not install it without confirmation:
@@ -117,3 +133,5 @@ cargo test
 ```
 
 The E2E suite uses four fake vendor CLIs. It exercises discovery, subscription-auth checks, parallel review, reducer selection, approval-gated fixing, API-key and GitHub-auth stripping, missing push remotes, protocol-violation rejection, and source-checkout isolation without consuming real model quota.
+
+An optional scheduled/manual workflow also reviews a fixed reverse-diff fixture from `dtolnay/anyhow#420` through OpenRouter. It is a live model oracle, not a production Triad provider: production adapters remain subscription-only. The workflow never runs for pull requests and skips the model call unless `OPENROUTER_API_KEY` is configured as a GitHub Actions secret.
