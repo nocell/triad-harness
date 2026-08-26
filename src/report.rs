@@ -130,6 +130,14 @@ Strict side-effect policy:
 
 Mandatory rubric: correctness, security, concurrency, error handling, compatibility, and missing tests. Your extra focus is {focus}.
 
+Lazy-senior policy:
+- Optimize for shipping safe, understandable code, not for achieving an ideal architecture.
+- Report issues that materially affect users, correctness, security, reliability, code quality, or the readability and maintainability of the changed code.
+- Do not request broad refactors, redesigns, new abstractions, deduplication, cleanup, renaming, formatting, or extra tests merely for elegance, stylistic preference, or textbook DRY. Prefer tolerating small local duplication over introducing a speculative abstraction.
+- Respect the repository's current architecture and local conventions. When a fix is warranted, suggest the smallest local change that addresses the concrete impact.
+- A readability finding needs an objective maintenance risk in the changed code, such as obscured behavior or a meaningful likelihood of future defects. Personal taste is not a finding.
+- If the code can safely ship as written, return no finding.
+
 High-precision policy:
 - Report only defects introduced by this diff.
 - Every finding needs a reachable trigger and concrete consequence.
@@ -152,6 +160,8 @@ Read .triad-review/context.md and .triad-review/provider-results.json. Open the 
 
 Remain strictly read-only: do not edit/delete files, commit/push, create branches/tags, post comments/reviews/issues, send messages, access the network, or perform external actions. You may only inspect, propose, and run existing local unit tests or read-only checks in this disposable snapshot.
 
+Apply a lazy-senior gate: optimize for a safe, understandable merge rather than ideal architecture. Reject findings that only ask for refactoring, abstraction, deduplication, cleanup, naming, formatting, stylistic consistency, or more tests without a concrete user, correctness, reliability, code-quality, or objective maintainability impact. Small local duplication is acceptable when abstraction would be speculative. For a proven issue, prefer the smallest fix consistent with the current design. If the code can safely ship as written, do not invent work.
+
 Classify every semantic issue as accepted, needs-human, or rejected. Deduplicate equivalent issues. Use stable IDs TRIAD-001, TRIAD-002, ... ordered by severity and file. Only accepted issues are eligible for fixing. Return JSON only matching the requested schema.
 "#
     )
@@ -167,6 +177,8 @@ pub fn fixer_prompt(findings: &[ReducedFinding]) -> Result<String> {
 Rules:
 - Do not commit, push, rewrite history, or modify anything outside this checkout.
 - Make the smallest coherent fix for each listed finding.
+- Preserve the current architecture and local conventions. Do not perform opportunistic refactoring, abstraction, deduplication, cleanup, renaming, formatting, or unrelated test expansion.
+- Prefer a direct local patch over a broader redesign unless the approved finding cannot be fixed safely without it.
 - Run focused tests or checks appropriate to the changed code.
 - Leave all changes in the working tree.
 - Finish with JSON: {{"summary":"...","tests":[{{"command":"...","status":"passed|failed|not_run"}}]}}.
@@ -297,6 +309,22 @@ pub fn install_context(snapshot: &Path, provider_results: Option<&Path>) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prompts_enforce_lazy_senior_review_scope() {
+        let reviewer = reviewer_prompt(ProviderKind::Codex, "base", "head", false);
+        assert!(reviewer.contains("Lazy-senior policy"));
+        assert!(reviewer.contains("If the code can safely ship as written, return no finding"));
+        assert!(reviewer.contains("tolerating small local duplication"));
+
+        let reducer = reducer_prompt("base", "head", false);
+        assert!(reducer.contains("Apply a lazy-senior gate"));
+        assert!(reducer.contains("do not invent work"));
+
+        let fixer = fixer_prompt(&[]).unwrap();
+        assert!(fixer.contains("Do not perform opportunistic refactoring"));
+        assert!(fixer.contains("Prefer a direct local patch"));
+    }
 
     #[test]
     fn parses_fenced_findings() {

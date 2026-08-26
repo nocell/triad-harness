@@ -382,6 +382,14 @@ Triad pins the intended subscription models; do not silently substitute API-back
 
 Treat Map outputs as claims, not votes. The reducer must inspect the code independently, validate each reachable trigger and consequence, deduplicate overlapping claims, and classify findings as `accepted`, `needs-human`, or `rejected`. Agreement between reviewers is supporting context, never proof.
 
+## Lazy-senior review policy
+
+- Optimize for shipping safe, understandable code, not for ideal architecture.
+- Focus on changes that materially affect users, correctness, security, reliability, code quality, or objective readability and maintainability.
+- Do not demand broad refactors, redesigns, abstractions, deduplication, cleanup, renaming, formatting, or extra tests merely for elegance, personal preference, or textbook DRY. Small local duplication is often cheaper than a speculative abstraction.
+- Respect the repository's current architecture and local conventions. Prefer the smallest local fix that resolves a proven impact.
+- A readability finding must identify concrete obscured behavior or maintenance risk. If the code can safely ship as written, return no finding.
+
 ## Review
 
 - Select the target that matches the request: a PR number or URL, `--base REF`, `--commit SHA`, or `--uncommitted`.
@@ -403,7 +411,7 @@ Treat Map outputs as claims, not votes. The reducer must inspect the code indepe
     let openai_yaml = r#"interface:
   display_name: "Triad"
   short_description: "Run frontier-model MapReduce code reviews"
-  default_prompt: "Use $triad to run an independent MapReduce review with every available subscription-backed frontier model, then present the verified report without making changes."
+  default_prompt: "Use $triad to run a high-signal lazy-senior MapReduce review with every available subscription-backed frontier model. Prefer safe minimal changes over refactors, and present the verified report without making changes."
 policy:
   allow_implicit_invocation: true
 "#;
