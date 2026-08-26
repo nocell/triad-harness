@@ -613,6 +613,12 @@ fn codex_supports_gpt_5_6_sol(version: &str) -> bool {
 }
 
 async fn inspect_auth(adapter: &ProviderAdapter) -> (AuthState, Option<String>) {
+    if adapter.kind == ProviderKind::Kimi && !kimi_oauth_credentials_present() {
+        return (
+            AuthState::NotAuthenticated,
+            Some("Kimi OAuth credential file is missing".into()),
+        );
+    }
     let args: &[&str] = match adapter.kind {
         ProviderKind::Claude => &["auth", "status"],
         ProviderKind::Codex => &["login", "status"],
@@ -673,6 +679,27 @@ async fn inspect_auth(adapter: &ProviderAdapter) -> (AuthState, Option<String>) 
     } else {
         (AuthState::Unknown, Some(first_line(&output)))
     }
+}
+
+fn kimi_oauth_credentials_present() -> bool {
+    std::env::var_os("KIMI_CODE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|home| home.join(".kimi-code")))
+        .is_some_and(|root| kimi_oauth_credentials_present_at(&root))
+}
+
+fn kimi_oauth_credentials_present_at(root: &Path) -> bool {
+    std::fs::read_dir(root.join("credentials"))
+        .ok()
+        .is_some_and(|entries| {
+            entries.flatten().any(|entry| {
+                entry.file_type().is_ok_and(|file_type| file_type.is_file())
+                    && entry
+                        .path()
+                        .extension()
+                        .is_some_and(|value| value == "json")
+            })
+        })
 }
 
 fn explicitly_not_authenticated(provider: ProviderKind, lowered: &str) -> bool {
@@ -1180,6 +1207,21 @@ mod tests {
             ProviderKind::Cursor,
             "logged in as reviewer@example.com"
         ));
+    }
+
+    #[test]
+    fn kimi_auth_requires_a_top_level_oauth_credential_file() {
+        let root = tempfile::tempdir().unwrap();
+        let credentials = root.path().join("credentials");
+        std::fs::create_dir_all(&credentials).unwrap();
+        assert!(!kimi_oauth_credentials_present_at(root.path()));
+
+        std::fs::create_dir_all(credentials.join("mcp")).unwrap();
+        std::fs::write(credentials.join("mcp/server.json"), "{}").unwrap();
+        assert!(!kimi_oauth_credentials_present_at(root.path()));
+
+        std::fs::write(credentials.join("kimi.json"), "not-read-by-triad").unwrap();
+        assert!(kimi_oauth_credentials_present_at(root.path()));
     }
 
     #[test]

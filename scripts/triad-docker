@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+docker_bin=${TRIAD_DOCKER_BIN:-docker}
+image=${TRIAD_DOCKER_IMAGE:-ghcr.io/nocell/triad-harness:edge}
+workspace=${TRIAD_DOCKER_WORKSPACE:-$PWD}
+credentials_home=${TRIAD_DOCKER_CREDENTIALS_HOME:-$HOME}
+state_base=${XDG_DATA_HOME:-$HOME/.local/share}
+docker_home=${TRIAD_DOCKER_HOME:-$state_base/triad/docker-home}
+pull_policy=${TRIAD_DOCKER_PULL:-missing}
+
+if ! command -v "$docker_bin" >/dev/null 2>&1; then
+  echo "Docker CLI not found: $docker_bin" >&2
+  exit 127
+fi
+
+for arg in "$@"; do
+  if [ "$arg" = "--detach" ]; then
+    echo "Triad --detach is not supported in an ephemeral container; run the review in the foreground." >&2
+    exit 2
+  fi
+done
+
+if [ ! -d "$workspace" ]; then
+  echo "Workspace does not exist: $workspace" >&2
+  exit 2
+fi
+workspace=$(cd "$workspace" && pwd -P)
+if ! git -C "$workspace" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  echo "Workspace is not a Git checkout: $workspace" >&2
+  exit 2
+fi
+
+mkdir -p \
+  "$docker_home/.cache" \
+  "$docker_home/.cargo" \
+  "$docker_home/.claude" \
+  "$docker_home/.codex" \
+  "$docker_home/.cursor" \
+  "$docker_home/.kimi-code" \
+  "$docker_home/.config/triad" \
+  "$docker_home/.local/share/triad"
+chmod 0700 "$docker_home"
+docker_home=$(cd "$docker_home" && pwd -P)
+
+reject_mount_comma() {
+  case "$1" in
+    *,*)
+      echo "Docker --mount paths containing commas are not supported: $1" >&2
+      exit 2
+      ;;
+  esac
+}
+
+reject_mount_comma "$workspace"
+reject_mount_comma "$docker_home"
+
+docker_args=(
+  run
+  --rm
+  --init
+  --read-only
+  --cap-drop=ALL
+  --security-opt=no-new-privileges
+  --pids-limit=2048
+  --pull "$pull_policy"
+  --user "$(id -u):$(id -g)"
+  --workdir /workspace
+  --mount "type=bind,src=$workspace,dst=/workspace,readonly"
+  --mount "type=bind,src=$docker_home,dst=/home/triad"
+  --tmpfs "/tmp:rw,nosuid,nodev,size=2g"
+)
+
+# Only vendor state roots are shared. The real home directory, SSH agent,
+# Docker socket, GitHub credentials, and API-key environment variables are not.
+for state_dir in .claude .codex .kimi-code .cursor; do
+  source_dir="$credentials_home/$state_dir"
+  if [ -d "$source_dir" ]; then
+    source_dir=$(cd "$source_dir" && pwd -P)
+    reject_mount_comma "$source_dir"
+    docker_args+=(--mount "type=bind,src=$source_dir,dst=/home/triad/$state_dir")
+  fi
+done
+
+if [ -t 0 ]; then
+  docker_args+=(-i)
+fi
+if [ -t 1 ]; then
+  docker_args+=(-t)
+fi
+
+if [ "$#" -eq 0 ]; then
+  set -- --help
+fi
+
+exec "$docker_bin" "${docker_args[@]}" "$image" "$@"

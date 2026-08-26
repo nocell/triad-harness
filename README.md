@@ -64,6 +64,31 @@ sudo dnf install ./triad-harness-VERSION-1.ARCH.rpm
 
 Release archives and native packages contain statically linked musl binaries for Linux on x86_64 and ARM64. The project does not currently operate signed apt or yum repositories.
 
+### Docker (x86_64 and ARM64)
+
+The GHCR image contains Triad plus Claude Code, Codex CLI, Kimi Code CLI, Cursor Agent, Node.js, Python, and Rust. `edge` tracks `main`; version tags and `latest` are published from a release tag as one multi-platform manifest for `linux/amd64` and `linux/arm64`.
+
+```bash
+docker pull ghcr.io/nocell/triad-harness:edge
+scripts/triad-docker doctor --refresh --json
+scripts/triad-docker review --base origin/main
+```
+
+Build the same image locally with:
+
+```bash
+docker build --tag triad:local .
+TRIAD_DOCKER_IMAGE=triad:local TRIAD_DOCKER_PULL=never scripts/triad-docker doctor --refresh
+```
+
+The wrapper mounts the selected Git checkout at `/workspace` read-only. Disposable snapshots, run artifacts, tool caches, and container-only login state live under `~/.local/share/triad/docker-home` by default. Existing `~/.claude`, `~/.codex`, `~/.kimi-code`, and `~/.cursor` directories are bind-mounted individually when present so browser/subscription login can be reused and refreshed. Override the source home with `TRIAD_DOCKER_CREDENTIALS_HOME`, the persistent container home with `TRIAD_DOCKER_HOME`, or the checkout with `TRIAD_DOCKER_WORKSPACE`.
+
+The wrapper never mounts the whole host home, Docker socket, SSH agent, GitHub credentials, or vendor API-key environment variables. The image contains no credentials; `.dockerignore` allowlists only build inputs. It runs with the host UID/GID, a read-only root filesystem, all Linux capabilities dropped, and `no-new-privileges`.
+
+Claude Code credentials created on macOS are stored in Keychain and cannot be bind-mounted into a Linux container. Run `scripts/triad-docker provider login claude` once; the Linux subscription credential is then persisted in the mounted `.claude` state. Missing Kimi or other provider directories work the same way. No login is started automatically.
+
+Use foreground reviews in the ephemeral container. `scripts/triad-docker` rejects Triad's `--detach`, because Docker would stop the container as soon as the launcher process exits. Run `status`, `follow`, and `report` in later wrapper invocations against the persisted Triad state. Repository-specific test toolchains beyond the included Rust, Node.js, and Python environments can be added in a derived image.
+
 Cursor CLI is currently optional. Triad will not install it without confirmation:
 
 ```bash
