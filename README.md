@@ -24,11 +24,11 @@ Reviewers are strictly passive. Their prompts forbid editing or deleting files, 
 ### Cargo
 
 ```bash
-git clone https://github.com/nocell/triad-harness.git
-cd triad-harness
-cargo install --path .
+cargo install triad-harness
 triad doctor --refresh
 ```
+
+For development installs, clone the repository and run `cargo install --path .`.
 
 ### npm / npx
 
@@ -36,13 +36,33 @@ triad doctor --refresh
 npx triad-harness --help
 ```
 
-The npm launcher downloads the matching macOS release binary and verifies its SHA-256 checksum before execution.
+The npm launcher downloads the matching macOS or Linux release binary and verifies its SHA-256 checksum before execution.
 
 ### Homebrew
 
 ```bash
 brew install nocell/tap/triad
 ```
+
+The same formula supports Homebrew on macOS and Linuxbrew on x86_64 and ARM64.
+
+### Debian / Ubuntu
+
+Download the matching `.deb` from the GitHub Release, then install it locally:
+
+```bash
+sudo apt install ./triad-harness_VERSION_ARCH.deb
+```
+
+### Fedora / RHEL
+
+Download the matching `.rpm` from the GitHub Release, then install it locally:
+
+```bash
+sudo dnf install ./triad-harness-VERSION-1.ARCH.rpm
+```
+
+Release archives and native packages contain statically linked musl binaries for Linux on x86_64 and ARM64. The project does not currently operate signed apt or yum repositories.
 
 Cursor CLI is currently optional. Triad will not install it without confirmation:
 

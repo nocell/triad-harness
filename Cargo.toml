@@ -1,12 +1,25 @@
 [package]
-name = "triad"
+name = "triad-harness"
 version = "0.1.0"
 edition = "2024"
-description = "Local multi-provider AI review harness"
+description = "Subscription-backed frontier-model MapReduce code review harness"
 license = "MIT"
 repository = "https://github.com/nocell/triad-harness"
+homepage = "https://github.com/nocell/triad-harness"
 readme = "README.md"
 rust-version = "1.85"
+keywords = ["ai", "code-review", "cli", "developer-tools"]
+categories = ["command-line-utilities", "development-tools"]
+publish = ["crates-io"]
+include = ["/src/**", "/tests/**", "/Cargo.toml", "/Cargo.lock", "/README.md", "/LICENSE"]
+
+[lib]
+name = "triad"
+path = "src/lib.rs"
+
+[[bin]]
+name = "triad"
+path = "src/main.rs"
 
 [dependencies]
 anyhow = "1"

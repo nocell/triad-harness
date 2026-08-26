@@ -35,7 +35,36 @@ jobs:
       - name: Verify Homebrew formula renderer
         run: |
           temporary="$(mktemp -d)"
-          printf '%064d  triad-v0.1.0-darwin-arm64.tar.gz\n' 1 > "$temporary/SHA256SUMS"
-          printf '%064d  triad-v0.1.0-darwin-x64.tar.gz\n' 2 >> "$temporary/SHA256SUMS"
+          {
+            printf '%064d  triad-v0.1.0-darwin-arm64.tar.gz\n' 1
+            printf '%064d  triad-v0.1.0-darwin-x64.tar.gz\n' 2
+            printf '%064d  triad-v0.1.0-linux-arm64.tar.gz\n' 3
+            printf '%064d  triad-v0.1.0-linux-x64.tar.gz\n' 4
+          } > "$temporary/SHA256SUMS"
           scripts/render-homebrew-formula.sh v0.1.0 "$temporary/SHA256SUMS" "$temporary/triad.rb"
           ruby -c "$temporary/triad.rb"
+
+  linux-packages:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+      - name: Install rpm tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes musl-tools rpm
+      - run: cargo build --release --locked --target x86_64-unknown-linux-musl
+      - name: Build deb and rpm fixtures
+        run: scripts/build-linux-packages.sh v0.1.0 target/x86_64-unknown-linux-musl/release/triad amd64 x86_64 dist "$GITHUB_REPOSITORY"
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - run: npm ci
+        working-directory: npm
+      - run: npm test
+        working-directory: npm
+      - run: cargo publish --dry-run --locked

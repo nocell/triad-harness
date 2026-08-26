@@ -8,6 +8,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { execFileSync, spawnSync } = require("node:child_process");
 const packageJson = require("../package.json");
+const { releaseTarget } = require("../lib/platform.js");
 
 const REPOSITORY = "nocell/triad-harness";
 const MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024;
@@ -15,15 +16,6 @@ const MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024;
 function fail(message) {
   process.stderr.write(`triad-harness: ${message}\n`);
   process.exit(1);
-}
-
-function releaseTarget() {
-  if (process.platform !== "darwin") {
-    fail(`unsupported platform ${process.platform}; Triad currently supports macOS only`);
-  }
-  if (process.arch === "arm64") return "arm64";
-  if (process.arch === "x64") return "x64";
-  fail(`unsupported macOS architecture ${process.arch}`);
 }
 
 function download(url, redirects = 0) {
@@ -71,11 +63,16 @@ function download(url, redirects = 0) {
 async function installedBinary() {
   if (process.env.TRIAD_BINARY) return process.env.TRIAD_BINARY;
 
-  const arch = releaseTarget();
+  let target;
+  try {
+    target = releaseTarget();
+  } catch (error) {
+    fail(error.message);
+  }
   const version = packageJson.version;
-  const asset = `triad-v${version}-darwin-${arch}.tar.gz`;
+  const asset = `triad-v${version}-${target.os}-${target.arch}.tar.gz`;
   const cacheBase = process.env.XDG_CACHE_HOME || path.join(os.homedir(), ".cache");
-  const installDir = path.join(cacheBase, "triad-harness", version, `darwin-${arch}`);
+  const installDir = path.join(cacheBase, "triad-harness", version, `${target.os}-${target.arch}`);
   const binary = path.join(installDir, "triad");
   if (fs.existsSync(binary)) return binary;
 

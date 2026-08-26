@@ -6,6 +6,16 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const test = require("node:test");
+const { releaseTarget } = require("../lib/platform.js");
+
+test("release target maps supported operating systems and architectures", () => {
+  assert.deepEqual(releaseTarget("darwin", "arm64"), { os: "darwin", arch: "arm64" });
+  assert.deepEqual(releaseTarget("darwin", "x64"), { os: "darwin", arch: "x64" });
+  assert.deepEqual(releaseTarget("linux", "arm64"), { os: "linux", arch: "arm64" });
+  assert.deepEqual(releaseTarget("linux", "x64"), { os: "linux", arch: "x64" });
+  assert.throws(() => releaseTarget("win32", "x64"), /supports macOS and Linux/);
+  assert.throws(() => releaseTarget("linux", "ia32"), /unsupported linux architecture/);
+});
 
 test("launcher forwards arguments and exit status to an explicit binary", () => {
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "triad-launcher-test-"));

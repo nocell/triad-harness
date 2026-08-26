@@ -10,17 +10,31 @@ permissions:
 
 jobs:
   build:
-    name: Build ${{ matrix.arch }}
+    name: Build ${{ matrix.os }} ${{ matrix.arch }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - runner: macos-15
             target: aarch64-apple-darwin
+            os: darwin
             arch: arm64
           - runner: macos-15-intel
             target: x86_64-apple-darwin
+            os: darwin
             arch: x64
+          - runner: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-musl
+            os: linux
+            arch: arm64
+            deb_arch: arm64
+            rpm_arch: aarch64
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-musl
+            os: linux
+            arch: x64
+            deb_arch: amd64
+            rpm_arch: x86_64
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v6
@@ -30,6 +44,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: release-${{ matrix.target }}
+      - name: Install Linux package tools
+        if: matrix.os == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes musl-tools rpm
       - name: Verify release version
         env:
           RELEASE_TAG: ${{ github.ref_name }}
@@ -44,26 +63,36 @@ jobs:
       - name: Build release archive
         env:
           TARGET: ${{ matrix.target }}
+          OS: ${{ matrix.os }}
           ARCH: ${{ matrix.arch }}
           RELEASE_TAG: ${{ github.ref_name }}
+          DEB_ARCH: ${{ matrix.deb_arch }}
+          RPM_ARCH: ${{ matrix.rpm_arch }}
           MACOSX_DEPLOYMENT_TARGET: "13.0"
         run: |
           cargo build --release --locked --target "$TARGET"
-          stage="dist/stage-$ARCH"
-          asset="triad-$RELEASE_TAG-darwin-$ARCH.tar.gz"
+          stage="dist/stage-$OS-$ARCH"
+          asset="triad-$RELEASE_TAG-$OS-$ARCH.tar.gz"
           mkdir -p "$stage"
           cp "target/$TARGET/release/triad" "$stage/triad"
           chmod 755 "$stage/triad"
           "$stage/triad" --version
           tar -C "$stage" -czf "dist/$asset" triad
-          cd dist
-          shasum -a 256 "$asset" > "$asset.sha256"
+      - name: Build deb and rpm packages
+        if: matrix.os == 'linux'
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          TARGET: ${{ matrix.target }}
+          DEB_ARCH: ${{ matrix.deb_arch }}
+          RPM_ARCH: ${{ matrix.rpm_arch }}
+        run: scripts/build-linux-packages.sh "$RELEASE_TAG" "target/$TARGET/release/triad" "$DEB_ARCH" "$RPM_ARCH" dist "$GITHUB_REPOSITORY"
       - uses: actions/upload-artifact@v4
         with:
-          name: triad-${{ matrix.arch }}
+          name: triad-${{ matrix.os }}-${{ matrix.arch }}
           path: |
             dist/*.tar.gz
-            dist/*.sha256
+            dist/*.deb
+            dist/*.rpm
           if-no-files-found: error
 
   github-release:
@@ -83,7 +112,7 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
           REPOSITORY: ${{ github.repository }}
         run: |
-          cat dist/*.sha256 > dist/SHA256SUMS
+          (cd dist && sha256sum -- *.tar.gz *.deb *.rpm > SHA256SUMS)
           scripts/render-homebrew-formula.sh "$RELEASE_TAG" dist/SHA256SUMS dist/triad.rb "$REPOSITORY"
       - name: Publish GitHub release
         env:
@@ -91,10 +120,34 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$RELEASE_TAG" dist/*.tar.gz dist/SHA256SUMS dist/triad.rb --clobber --repo "$GITHUB_REPOSITORY"
+            gh release upload "$RELEASE_TAG" dist/*.tar.gz dist/*.deb dist/*.rpm dist/SHA256SUMS dist/triad.rb --clobber --repo "$GITHUB_REPOSITORY"
           else
-            gh release create "$RELEASE_TAG" dist/*.tar.gz dist/SHA256SUMS dist/triad.rb --verify-tag --generate-notes --title "Triad $RELEASE_TAG" --repo "$GITHUB_REPOSITORY"
+            gh release create "$RELEASE_TAG" dist/*.tar.gz dist/*.deb dist/*.rpm dist/SHA256SUMS dist/triad.rb --verify-tag --generate-notes --title "Triad $RELEASE_TAG" --repo "$GITHUB_REPOSITORY"
           fi
+
+  crates-io:
+    needs: github-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Verify crate version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: test "${RELEASE_TAG#v}" = "$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')"
+      - name: Publish crates.io package
+        run: |
+          version="${RELEASE_TAG#v}"
+          if curl --fail --silent --show-error --user-agent triad-release-workflow "https://crates.io/api/v1/crates/triad-harness/$version" >/dev/null; then
+            echo "triad-harness $version is already published"
+            exit 0
+          fi
+          cargo publish --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
 
   npm:
     needs: github-release
@@ -122,9 +175,15 @@ jobs:
       - name: Publish npm package
         working-directory: npm
         run: |
+          version="${RELEASE_TAG#v}"
+          if npm view "triad-harness@$version" version >/dev/null 2>&1; then
+            echo "triad-harness $version is already published"
+            exit 0
+          fi
           if [ -z "$NODE_AUTH_TOKEN" ]; then
             unset NODE_AUTH_TOKEN
           fi
           npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}

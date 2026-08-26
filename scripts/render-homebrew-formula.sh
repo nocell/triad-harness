@@ -19,18 +19,21 @@ case "$release_tag" in
     ;;
 esac
 
-arm64_sha=$(awk '$2 ~ /darwin-arm64\.tar\.gz$/ {print $1}' "$sums_file")
-x64_sha=$(awk '$2 ~ /darwin-x64\.tar\.gz$/ {print $1}' "$sums_file")
+darwin_arm64_sha=$(awk '$2 ~ /darwin-arm64\.tar\.gz$/ {print $1}' "$sums_file")
+darwin_x64_sha=$(awk '$2 ~ /darwin-x64\.tar\.gz$/ {print $1}' "$sums_file")
+linux_arm64_sha=$(awk '$2 ~ /linux-arm64\.tar\.gz$/ {print $1}' "$sums_file")
+linux_x64_sha=$(awk '$2 ~ /linux-x64\.tar\.gz$/ {print $1}' "$sums_file")
 version=${release_tag#v}
 
-case "$arm64_sha$x64_sha" in
+case "$darwin_arm64_sha$darwin_x64_sha$linux_arm64_sha$linux_x64_sha" in
   *[!0-9a-fA-F]*)
     echo "release checksums are missing or malformed" >&2
     exit 2
     ;;
 esac
 
-if [ "${#arm64_sha}" -ne 64 ] || [ "${#x64_sha}" -ne 64 ]; then
+if [ "${#darwin_arm64_sha}" -ne 64 ] || [ "${#darwin_x64_sha}" -ne 64 ] ||
+  [ "${#linux_arm64_sha}" -ne 64 ] || [ "${#linux_x64_sha}" -ne 64 ]; then
   echo "release checksums are missing or malformed" >&2
   exit 2
 fi
@@ -42,14 +45,28 @@ class Triad < Formula
   version "$version"
   license "MIT"
 
-  on_arm do
-    url "https://github.com/$repository/releases/download/$release_tag/triad-$release_tag-darwin-arm64.tar.gz"
-    sha256 "$arm64_sha"
+  on_macos do
+    on_arm do
+      url "https://github.com/$repository/releases/download/$release_tag/triad-$release_tag-darwin-arm64.tar.gz"
+      sha256 "$darwin_arm64_sha"
+    end
+
+    on_intel do
+      url "https://github.com/$repository/releases/download/$release_tag/triad-$release_tag-darwin-x64.tar.gz"
+      sha256 "$darwin_x64_sha"
+    end
   end
 
-  on_intel do
-    url "https://github.com/$repository/releases/download/$release_tag/triad-$release_tag-darwin-x64.tar.gz"
-    sha256 "$x64_sha"
+  on_linux do
+    on_arm do
+      url "https://github.com/$repository/releases/download/$release_tag/triad-$release_tag-linux-arm64.tar.gz"
+      sha256 "$linux_arm64_sha"
+    end
+
+    on_intel do
+      url "https://github.com/$repository/releases/download/$release_tag/triad-$release_tag-linux-x64.tar.gz"
+      sha256 "$linux_x64_sha"
+    end
   end
 
   def install
