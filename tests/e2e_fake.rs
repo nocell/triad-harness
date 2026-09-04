@@ -68,7 +68,7 @@ if [ "$1" = "--version" ]; then echo '2.1.fake (Claude Code)'; exit 0; fi
 if [ "$1" = "auth" ]; then echo '{{"loggedIn":true,"subscriptionType":"max","authMethod":"claude.ai"}}'; exit 0; fi
 {guard_checks}
 all="$*"
-case " $all " in *" --model claude-fable-5[1m] "*) ;; *) echo 'Claude model was not pinned to Fable 5 1M' >&2; exit 95 ;; esac
+case " $all " in *" --model claude-fable-5-1 "*) ;; *) echo 'Claude model was not pinned to Fable 5.1' >&2; exit 95 ;; esac
 settings=''
 while [ $# -gt 0 ]; do if [ "$1" = "--settings" ]; then settings="$2"; shift 2; else shift; fi; done
 out="$(dirname "$settings")/reviewer.hook.json"
@@ -90,6 +90,8 @@ case " $all " in *" --model gpt-5.6-sol "*) ;; *) echo 'Codex model was not pinn
 case " $all " in *" --config model_reasoning_effort=max "*) ;; *) echo 'Codex reasoning was not set to max' >&2; exit 96 ;; esac
 case " $all " in *" --ignore-user-config "*) ;; *) echo 'Codex inherited unsafe user config' >&2; exit 97 ;; esac
 case " $all " in *" --disable hooks "*) ;; *) echo 'Codex hooks were not disabled' >&2; exit 98 ;; esac
+case " $all " in *" --disable fast_mode "*) ;; *) echo 'Codex Fast mode was not disabled' >&2; exit 99 ;; esac
+case " $all " in *' --config service_tier="default" '*) ;; *) echo 'Codex service tier was not pinned to Standard' >&2; exit 100 ;; esac
 while [ $# -gt 0 ]; do if [ "$1" = "--output-last-message" ]; then final="$2"; shift 2; else shift; fi; done
 case "$all" in
   *"Triad reducer"*) result='{{"findings":[{{"id":"TRIAD-001","verdict":"accepted","title":"Concrete bug","severity":"high","file":"file.txt","line":2,"rationale":"verified","evidence":"bug line","trigger":"read file","impact":"failure","suggested_fix":"replace bug","sources":["codex"]}}]}}' ;;

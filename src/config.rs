@@ -40,7 +40,7 @@ impl Default for Config {
                 let mut config = ProviderConfig::default();
                 match provider {
                     ProviderKind::Claude => {
-                        config.model = Some("claude-fable-5[1m]".into());
+                        config.model = Some("claude-fable-5-1".into());
                     }
                     ProviderKind::Codex => {
                         config.model = Some("gpt-5.6-sol".into());
@@ -107,7 +107,7 @@ impl Config {
             ProviderKind::Claude => {
                 config
                     .model
-                    .get_or_insert_with(|| "claude-fable-5[1m]".into());
+                    .get_or_insert_with(|| "claude-fable-5-1".into());
             }
             ProviderKind::Codex => {
                 config.model.get_or_insert_with(|| "gpt-5.6-sol".into());
@@ -167,7 +167,7 @@ mod tests {
 
         assert_eq!(
             config.provider(ProviderKind::Claude).model.as_deref(),
-            Some("claude-fable-5[1m]")
+            Some("claude-fable-5-1")
         );
         assert_eq!(
             config.provider(ProviderKind::Kimi).model.as_deref(),

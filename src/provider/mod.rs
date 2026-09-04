@@ -320,6 +320,10 @@ impl ProviderAdapter {
                     "--strict-config".into(),
                     "--disable".into(),
                     "hooks".into(),
+                    "--disable".into(),
+                    "fast_mode".into(),
+                    "--config".into(),
+                    "service_tier=\"default\"".into(),
                     "--output-schema".into(),
                     context.schema_path.display().to_string(),
                     "--output-last-message".into(),
@@ -1151,6 +1155,18 @@ mod tests {
                 .args
                 .windows(2)
                 .any(|values| values == ["--disable", "hooks"])
+        );
+        assert!(
+            reviewer
+                .args
+                .windows(2)
+                .any(|values| values == ["--disable", "fast_mode"])
+        );
+        assert!(
+            reviewer
+                .args
+                .windows(2)
+                .any(|values| values == ["--config", "service_tier=\"default\""])
         );
         let fixer = adapter.command_spec(
             &context(&temp, AgentRole::Fixer),

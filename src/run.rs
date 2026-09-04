@@ -375,8 +375,8 @@ Use the installed `triad` CLI from the target Git repository. It fans review out
 
 Triad pins the intended subscription models; do not silently substitute API-backed or weaker models:
 
-- Claude: `claude-fable-5[1m]` for architecture and data flow.
-- Codex: `gpt-5.6-sol` with `max` effort for correctness and concurrency.
+- Claude: `claude-fable-5-1` for architecture and data flow.
+- Codex: `gpt-5.6-sol` with `max` effort and Standard processing (Fast mode disabled) for correctness and concurrency.
 - Kimi: `kimi-code/k3` for regressions and API contracts.
 - Cursor: `grok-4.6-fast`, resolved to `cursor-grok-4.6-high-fast`, for adversarial and cross-file analysis.
 
