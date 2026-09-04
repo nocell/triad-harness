@@ -86,7 +86,7 @@ if [ "$1" = "--version" ]; then echo 'codex-cli 0.148.0'; exit 0; fi
 if [ "$1" = "login" ]; then echo 'Logged in using ChatGPT'; exit 0; fi
 {guard_checks}
 all="$*"; final=''
-case " $all " in *" --model gpt-5.6-sol "*) ;; *) echo 'Codex model was not pinned to gpt-5.6-sol' >&2; exit 95 ;; esac
+case " $all " in *" --model gpt-6-astra "*) ;; *) echo 'Codex model was not pinned to gpt-6-astra' >&2; exit 95 ;; esac
 case " $all " in *" --config model_reasoning_effort=max "*) ;; *) echo 'Codex reasoning was not set to max' >&2; exit 96 ;; esac
 case " $all " in *" --ignore-user-config "*) ;; *) echo 'Codex inherited unsafe user config' >&2; exit 97 ;; esac
 case " $all " in *" --disable hooks "*) ;; *) echo 'Codex hooks were not disabled' >&2; exit 98 ;; esac

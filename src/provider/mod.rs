@@ -34,7 +34,7 @@ const SECRET_ENV_KEYS: &[&str] = &[
 
 const REVIEWER_POLICY: &str = "read_only_no_external_actions";
 const CHATGPT_BUNDLED_CODEX: &str = "/Applications/ChatGPT.app/Contents/Resources/codex";
-const MIN_CODEX_FOR_GPT_5_6_SOL: (u64, u64, u64) = (0, 145, 0);
+const MIN_CODEX_CLI_VERSION: (u64, u64, u64) = (0, 145, 0);
 const CURSOR_GROK_4_6_MODEL: &str = "cursor-grok-4.6-high";
 const CURSOR_GROK_4_6_FAST_MODEL: &str = "cursor-grok-4.6-high-fast";
 
@@ -494,12 +494,12 @@ fn choose_codex_binary(bundled: PathBuf, path_binary: Option<PathBuf>) -> Option
     }
     candidates
         .iter()
-        .find(|binary| codex_binary_supports_sol(binary))
+        .find(|binary| codex_binary_is_compatible(binary))
         .cloned()
         .or_else(|| candidates.into_iter().next())
 }
 
-fn codex_binary_supports_sol(binary: &Path) -> bool {
+fn codex_binary_is_compatible(binary: &Path) -> bool {
     let mut command = std::process::Command::new(binary);
     command.arg("--version");
     for key in SECRET_ENV_KEYS {
@@ -509,7 +509,7 @@ fn codex_binary_supports_sol(binary: &Path) -> bool {
         .output()
         .ok()
         .filter(|output| output.status.success())
-        .is_some_and(|output| codex_supports_gpt_5_6_sol(&String::from_utf8_lossy(&output.stdout)))
+        .is_some_and(|output| codex_cli_is_compatible(&String::from_utf8_lossy(&output.stdout)))
 }
 
 pub fn for_kind(config: &Config, provider: ProviderKind) -> Result<ProviderAdapter> {
@@ -559,11 +559,11 @@ pub async fn inspect(config: &Config, provider: ProviderKind) -> ProviderStatus 
         && !adapter
             .version
             .as_deref()
-            .is_some_and(codex_supports_gpt_5_6_sol)
+            .is_some_and(codex_cli_is_compatible)
     {
         let version = adapter.version.as_deref().unwrap_or("unknown");
         let message = format!(
-            "gpt-5.6-sol requires Codex CLI >= 0.145.0; found {version}. Install a current official Codex CLI or use the one bundled with ChatGPT."
+            "Triad requires Codex CLI >= 0.145.0; found {version}. Install a current official Codex CLI or use the one bundled with ChatGPT."
         );
         return ProviderStatus {
             provider,
@@ -601,7 +601,7 @@ pub async fn inspect(config: &Config, provider: ProviderKind) -> ProviderStatus 
     }
 }
 
-fn codex_supports_gpt_5_6_sol(version: &str) -> bool {
+fn codex_cli_is_compatible(version: &str) -> bool {
     let Some(captures) = Regex::new(r"(?m)\b(\d+)\.(\d+)\.(\d+)")
         .ok()
         .and_then(|regex| regex.captures(version))
@@ -612,7 +612,7 @@ fn codex_supports_gpt_5_6_sol(version: &str) -> bool {
         .map(|index| captures[index].parse::<u64>().ok())
         .collect::<Option<Vec<_>>>();
     parsed
-        .map(|parts| (parts[0], parts[1], parts[2]) >= MIN_CODEX_FOR_GPT_5_6_SOL)
+        .map(|parts| (parts[0], parts[1], parts[2]) >= MIN_CODEX_CLI_VERSION)
         .unwrap_or(false)
 }
 
@@ -1118,7 +1118,7 @@ mod tests {
             kind: ProviderKind::Codex,
             binary: "codex".into(),
             version: None,
-            model: Some("gpt-5.6-sol".into()),
+            model: Some("gpt-6-astra".into()),
             reasoning_effort: Some("max".into()),
         };
         let reviewer = adapter.command_spec(
@@ -1136,7 +1136,7 @@ mod tests {
             reviewer
                 .args
                 .windows(2)
-                .any(|values| values == ["--model", "gpt-5.6-sol"])
+                .any(|values| values == ["--model", "gpt-6-astra"])
         );
         assert!(
             reviewer
@@ -1207,10 +1207,10 @@ mod tests {
 
     #[test]
     fn codex_version_gate_accepts_current_and_rejects_legacy_cli() {
-        assert!(codex_supports_gpt_5_6_sol("codex-cli 0.145.0"));
-        assert!(codex_supports_gpt_5_6_sol("codex-cli 0.148.0-alpha.15"));
-        assert!(!codex_supports_gpt_5_6_sol("codex-cli 0.142.3"));
-        assert!(!codex_supports_gpt_5_6_sol("codex-cli fake"));
+        assert!(codex_cli_is_compatible("codex-cli 0.145.0"));
+        assert!(codex_cli_is_compatible("codex-cli 0.148.0-alpha.15"));
+        assert!(!codex_cli_is_compatible("codex-cli 0.142.3"));
+        assert!(!codex_cli_is_compatible("codex-cli fake"));
     }
 
     #[test]

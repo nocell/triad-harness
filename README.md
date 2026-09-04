@@ -18,7 +18,7 @@ Large or risky changes are a poor fit for a single AI reviewer: one model can mi
 Supported providers:
 
 - Claude Code through an interactive `claude --bg` subscription session, pinned to `claude-fable-5-1` — never `claude -p` or Agent SDK usage.
-- Codex CLI through ChatGPT login, pinned to `gpt-5.6-sol` with `max` reasoning and Standard processing; Fast mode is explicitly disabled.
+- Codex CLI through ChatGPT login, pinned to `gpt-6-astra` with `max` reasoning and Standard processing; Fast mode is explicitly disabled.
 - Kimi Code through membership login, pinned to `kimi-code/k3`.
 - Cursor Agent through browser login, pinned to `grok-4.6-fast` (resolved to the current CLI model ID `cursor-grok-4.6-high-fast`).
 
@@ -26,7 +26,7 @@ Triad never reads vendor OAuth tokens and removes known API-key variables from e
 
 Cursor reviewers trust only the already-created disposable snapshot, run in read-only Ask mode with sandboxing enabled, and receive project-local deny rules for writes, secrets, destructive commands, network tools, and external CLIs. Global MCP servers are disabled for the run's snapshot and repository MCP configurations are replaced with empty run-local configs. The separately approved fixer allows writes only inside its disposable snapshot. Triad never passes Cursor `--force`, `-f`, or `--yolo`.
 
-On macOS, Triad prefers the current official Codex binary bundled with ChatGPT over an older global `codex`; an explicit `[providers.codex].binary` still wins. Codex runs with `--ignore-user-config`, user hooks and Fast mode disabled, `service_tier="default"`, the explicit model/effort pair, ChatGPT subscription auth, and a role-appropriate sandbox. It never silently falls back to an older model. CLI versions older than `0.145.0` are reported as incompatible with `gpt-5.6-sol`.
+On macOS, Triad prefers the current official Codex binary bundled with ChatGPT over an older global `codex`; an explicit `[providers.codex].binary` still wins. Codex runs with `--ignore-user-config`, user hooks and Fast mode disabled, `service_tier="default"`, the explicit model/effort pair, ChatGPT subscription auth, and a role-appropriate sandbox. It never silently falls back to an older model. Triad requires CLI version `0.145.0` or later; model availability is determined by the provider.
 
 Reviewers are strictly passive. Their prompts forbid editing or deleting files, commits, pushes, branches, tags, GitHub comments/reviews/issues, messages, deployments, and all other external actions. They may only inspect code, propose findings, and run existing local unit tests or read-only checks inside their disposable snapshots. Triad also removes each snapshot's Git remote, isolates Git/GitHub credentials, and discards any result whose snapshot files or HEAD changed.
 

@@ -43,7 +43,7 @@ impl Default for Config {
                         config.model = Some("claude-fable-5-1".into());
                     }
                     ProviderKind::Codex => {
-                        config.model = Some("gpt-5.6-sol".into());
+                        config.model = Some("gpt-6-astra".into());
                         config.reasoning_effort = Some("max".into());
                     }
                     ProviderKind::Kimi => {
@@ -110,7 +110,7 @@ impl Config {
                     .get_or_insert_with(|| "claude-fable-5-1".into());
             }
             ProviderKind::Codex => {
-                config.model.get_or_insert_with(|| "gpt-5.6-sol".into());
+                config.model.get_or_insert_with(|| "gpt-6-astra".into());
                 config.reasoning_effort.get_or_insert_with(|| "max".into());
             }
             ProviderKind::Kimi => {
@@ -129,8 +129,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn codex_defaults_to_sol_with_max_reasoning_even_in_partial_config() {
+    fn codex_defaults_to_astra_with_max_reasoning_even_in_partial_config() {
         let mut config = Config::default();
+        let codex = config.provider(ProviderKind::Codex);
+        assert_eq!(codex.model.as_deref(), Some("gpt-6-astra"));
+        assert_eq!(codex.reasoning_effort.as_deref(), Some("max"));
+
         config.providers.insert(
             "codex".into(),
             ProviderConfig {
@@ -142,7 +146,7 @@ mod tests {
         );
 
         let codex = config.provider(ProviderKind::Codex);
-        assert_eq!(codex.model.as_deref(), Some("gpt-5.6-sol"));
+        assert_eq!(codex.model.as_deref(), Some("gpt-6-astra"));
         assert_eq!(codex.reasoning_effort.as_deref(), Some("max"));
     }
 
