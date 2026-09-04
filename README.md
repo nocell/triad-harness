@@ -4,6 +4,17 @@ Triad is a local Rust CLI that reviews one Git change with every available subsc
 
 Triad is an independent project and is not affiliated with Anthropic, OpenAI, Moonshot AI, Cursor, or xAI.
 
+## Why Triad
+
+Large or risky changes are a poor fit for a single AI reviewer: one model can miss a cross-file regression, hallucinate a problem, or push its preferred architecture. Running several coding CLIs manually produces disconnected reports and repeated coordination work. Triad turns the subscription-backed agents you already use into one controlled review pipeline.
+
+- **Broader coverage without API billing.** Triad discovers authenticated Claude Code, Codex, Kimi Code, and Cursor Agent subscriptions and fans review out to every provider whose observed quota state is runnable.
+- **Independent perspectives, one verified report.** Every reviewer sees the same exact Git snapshot with a different focus. A separate leader reopens the code, verifies reachability and impact, deduplicates overlap, and classifies each claim instead of relying on majority voting.
+- **High signal over architectural taste.** Findings must include a location, evidence, trigger, impact, and suggested fix. The reducer rejects speculative cleanup and overengineering when the change can safely ship as written.
+- **Safe failure boundaries.** Reviewers run in disposable clones without a push remote, receive no vendor API-key environment variables, and are discarded if they mutate their snapshot. A provider quota or protocol failure degrades coverage without cancelling successful reviewers.
+- **Human-controlled fixes.** Review stops at a report. Only a separate `triad fix` command creates an isolated patch and test results; it never commits, pushes, or changes the source checkout.
+- **Usable for long reviews and CI.** Durable run manifests record exact revisions, providers, models, sessions, skipped coverage, and errors. Detached monitoring, resume/cancel commands, JSON output, and deterministic dry-run exit codes make the same workflow usable interactively or in CI.
+
 Supported providers:
 
 - Claude Code through an interactive `claude --bg` subscription session, pinned to `claude-fable-5-1` — never `claude -p` or Agent SDK usage.
