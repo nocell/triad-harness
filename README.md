@@ -4,6 +4,42 @@ Triad is a local Rust CLI that reviews one Git change with every available subsc
 
 Triad is an independent project and is not affiliated with Anthropic, OpenAI, Moonshot AI, Cursor, or xAI.
 
+## The idea: MapReduce for frontier-model intelligence
+
+Make the most of the intelligence available through your existing AI subscriptions. Triad gives the same code change to several frontier models in parallel, then brings their findings together for an independent verification pass. The goal is to combine complementary reasoning and catch blind spots that a single reviewer might miss.
+
+```mermaid
+flowchart TB
+    PR["One PR or Git change"] --> S["Exact Git snapshot + full diff"]
+    S --> Q["Discover providers with runnable subscription quota"]
+
+    subgraph MAP["MAP — Independent reviews in parallel"]
+        C["Claude Code<br/>Architecture and data flow"]
+        O["Codex<br/>Correctness and concurrency"]
+        K["Kimi Code<br/>Regressions and API contracts"]
+        G["Cursor / Grok<br/>Adversarial and cross-file analysis"]
+    end
+
+    Q --> C
+    Q --> O
+    Q --> K
+    Q --> G
+    C --> F["Structured findings + evidence"]
+    O --> F
+    K --> F
+    G --> F
+    F --> R["REDUCE — Leader independently checks the code<br/>Deduplicates and validates each claim"]
+    R --> REPORT["One report<br/>Accepted · Needs human · Rejected"]
+    REPORT --> APPROVE["Explicit user approval: triad fix"]
+    APPROVE --> FIX["Isolated patch + test results"]
+```
+
+**Map:** Up to four reviewers, one per runnable provider, inspect the same full change in separate disposable snapshots. Different review focuses encourage complementary findings. If one provider runs out of quota, the others can continue and the report records reduced coverage.
+
+**Reduce:** A configurable leader reads the findings and independently checks their evidence, reachable triggers, and impact against the code. Agreement between models is context, not proof; claims become `accepted`, `needs-human`, or `rejected` after verification.
+
+**Act:** Review ends with a report. A separate `triad fix <run-id>` command authorizes an isolated patch and test results for accepted findings. The source checkout stays untouched.
+
 ## Why Triad
 
 Large or risky changes are a poor fit for a single AI reviewer: one model can miss a cross-file regression, hallucinate a problem, or push its preferred architecture. Running several coding CLIs manually produces disconnected reports and repeated coordination work. Triad turns the subscription-backed agents you already use into one controlled review pipeline.
