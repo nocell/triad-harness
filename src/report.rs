@@ -112,6 +112,17 @@ pub fn reviewer_prompt(
         ProviderKind::Kimi => "regressions, API contracts, compatibility, and missing tests",
         ProviderKind::Cursor => "adversarial scenarios and long-horizon cross-file failures",
     };
+    let provider_policy = if provider == ProviderKind::Codex {
+        r#"
+Codex-specific anti-overengineering policy:
+- Treat "could be cleaner, more reusable, more extensible, or more DRY" as no finding. Require behavior that is wrong today or a concrete maintenance hazard introduced by this diff.
+- Do not propose a new layer, helper, type, trait, configuration option, dependency, generalized API, or broad test matrix unless the smallest proven fix cannot work without it.
+- Hypothetical future reuse, scale, consistency, flexibility, and pattern purity are not impact. Prefer an existing local pattern, the standard library, a direct guard, deletion, small duplication, or no change.
+- Before emitting a finding, ask whether a pragmatic lazy senior should block this merge today. If not, omit it.
+"#
+    } else {
+        ""
+    };
     let scope = if uncommitted {
         "the staged, unstaged, and untracked working-tree changes relative to HEAD".to_string()
     } else {
@@ -137,6 +148,7 @@ Lazy-senior policy:
 - Respect the repository's current architecture and local conventions. When a fix is warranted, suggest the smallest local change that addresses the concrete impact.
 - A readability finding needs an objective maintenance risk in the changed code, such as obscured behavior or a meaningful likelihood of future defects. Personal taste is not a finding.
 - If the code can safely ship as written, return no finding.
+{provider_policy}
 
 High-precision policy:
 - Report only defects introduced by this diff.
@@ -147,11 +159,21 @@ High-precision policy:
     )
 }
 
-pub fn reducer_prompt(base: &str, head: &str, uncommitted: bool) -> String {
+pub fn reducer_prompt(provider: ProviderKind, base: &str, head: &str, uncommitted: bool) -> String {
     let scope = if uncommitted {
         "the working-tree changes relative to HEAD".to_string()
     } else {
         format!("diff {base}..{head}")
+    };
+    let provider_policy = if provider == ProviderKind::Codex {
+        r#"
+Codex-specific anti-overengineering gate:
+- Default to rejecting claims whose benefit is cleanup, reuse, consistency, extensibility, abstraction, or future-proofing rather than a demonstrated present-day defect.
+- Do not preserve an oversized suggested fix: if the claim is valid, reduce it to the smallest root-cause change that fits the current design.
+- Use needs-human only for real behavioral ambiguity, not for design taste. A pragmatic lazy senior should be willing to block the merge before you accept a finding.
+"#
+    } else {
+        ""
     };
     format!(
         r#"You are the Triad reducer. Independently verify candidate findings for {scope}.
@@ -161,14 +183,24 @@ Read .triad-review/context.md and .triad-review/provider-results.json. Open the 
 Remain strictly read-only: do not edit/delete files, commit/push, create branches/tags, post comments/reviews/issues, send messages, access the network, or perform external actions. You may only inspect, propose, and run existing local unit tests or read-only checks in this disposable snapshot.
 
 Apply a lazy-senior gate: optimize for a safe, understandable merge rather than ideal architecture. Reject findings that only ask for refactoring, abstraction, deduplication, cleanup, naming, formatting, stylistic consistency, or more tests without a concrete user, correctness, reliability, code-quality, or objective maintainability impact. Small local duplication is acceptable when abstraction would be speculative. For a proven issue, prefer the smallest fix consistent with the current design. If the code can safely ship as written, do not invent work.
+{provider_policy}
 
 Classify every semantic issue as accepted, needs-human, or rejected. Deduplicate equivalent issues. Use stable IDs TRIAD-001, TRIAD-002, ... ordered by severity and file. Only accepted issues are eligible for fixing. Return JSON only matching the requested schema.
 "#
     )
 }
 
-pub fn fixer_prompt(findings: &[ReducedFinding]) -> Result<String> {
+pub fn fixer_prompt(provider: ProviderKind, findings: &[ReducedFinding]) -> Result<String> {
     let findings = serde_json::to_string_pretty(findings)?;
+    let provider_policy = if provider == ProviderKind::Codex {
+        r#"
+Codex-specific anti-overengineering rules:
+- Reuse the existing code path and local patterns. Add no abstraction, dependency, configuration, generalized API, or speculative flexibility unless an approved finding is impossible to fix safely without it.
+- Change the fewest files and lines that fix the shared root cause. Do not improve neighboring code. Add only the smallest focused regression check needed for the approved behavior.
+"#
+    } else {
+        ""
+    };
     Ok(format!(
         r#"You are the Triad fixer in a disposable checkout. Apply only the approved findings below.
 
@@ -182,6 +214,7 @@ Rules:
 - Run focused tests or checks appropriate to the changed code.
 - Leave all changes in the working tree.
 - Finish with JSON: {{"summary":"...","tests":[{{"command":"...","status":"passed|failed|not_run"}}]}}.
+{provider_policy}
 "#
     ))
 }
@@ -317,13 +350,28 @@ mod tests {
         assert!(reviewer.contains("If the code can safely ship as written, return no finding"));
         assert!(reviewer.contains("tolerating small local duplication"));
 
-        let reducer = reducer_prompt("base", "head", false);
+        assert!(reviewer.contains("pragmatic lazy senior should block this merge today"));
+        let claude_reviewer = reviewer_prompt(ProviderKind::Claude, "base", "head", false);
+        assert!(!claude_reviewer.contains("Codex-specific anti-overengineering policy"));
+
+        let reducer = reducer_prompt(ProviderKind::Codex, "base", "head", false);
         assert!(reducer.contains("Apply a lazy-senior gate"));
         assert!(reducer.contains("do not invent work"));
+        assert!(reducer.contains("Default to rejecting claims"));
+        assert!(
+            !reducer_prompt(ProviderKind::Claude, "base", "head", false)
+                .contains("Codex-specific anti-overengineering gate")
+        );
 
-        let fixer = fixer_prompt(&[]).unwrap();
+        let fixer = fixer_prompt(ProviderKind::Codex, &[]).unwrap();
         assert!(fixer.contains("Do not perform opportunistic refactoring"));
         assert!(fixer.contains("Prefer a direct local patch"));
+        assert!(fixer.contains("Change the fewest files and lines"));
+        assert!(
+            !fixer_prompt(ProviderKind::Claude, &[])
+                .unwrap()
+                .contains("Codex-specific anti-overengineering rules")
+        );
     }
 
     #[test]

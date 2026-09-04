@@ -389,6 +389,7 @@ Treat Map outputs as claims, not votes. The reducer must inspect the code indepe
 - Do not demand broad refactors, redesigns, abstractions, deduplication, cleanup, renaming, formatting, or extra tests merely for elegance, personal preference, or textbook DRY. Small local duplication is often cheaper than a speculative abstraction.
 - Respect the repository's current architecture and local conventions. Prefer the smallest local fix that resolves a proven impact.
 - A readability finding must identify concrete obscured behavior or maintenance risk. If the code can safely ship as written, return no finding.
+- Codex gets an additional YAGNI gate: hypothetical reuse, scale, consistency, flexibility, and pattern purity are not findings; prefer an existing path, a direct guard, deletion, small duplication, or no change.
 
 ## Review
 
@@ -611,7 +612,12 @@ async fn run_review_pipeline_inner(run_id: &str, args: &ReviewArgs) -> Result<i3
         role: AgentRole::Reducer,
         snapshot: reducer_snapshot,
         run_dir: run_dir.clone(),
-        prompt: report::reducer_prompt(&target.base_sha, &target.head_sha, target.uncommitted),
+        prompt: report::reducer_prompt(
+            leader,
+            &target.base_sha,
+            &target.head_sha,
+            target.uncommitted,
+        ),
         schema_path: reducer_schema,
         timeout: Duration::from_secs(config.reducer_timeout_minutes * 60),
     };
@@ -803,7 +809,7 @@ async fn run_fix_pipeline_inner(
         role: AgentRole::Fixer,
         snapshot: snapshot.clone(),
         run_dir: run_dir.clone(),
-        prompt: report::fixer_prompt(&selected)?,
+        prompt: report::fixer_prompt(leader, &selected)?,
         schema_path: schema,
         timeout: Duration::from_secs(config.fixer_timeout_minutes * 60),
     };
