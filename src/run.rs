@@ -369,18 +369,27 @@ description: Run subscription-backed frontier-model MapReduce reviews with Triad
 
 # Triad
 
-Use the installed `triad` CLI from the target Git repository. It fans review out to every runnable subscription-backed provider, then has a leader independently verify and reduce the findings. Every agent works in a disposable Git snapshot.
+Use the installed `triad` CLI from the target Git repository to make the most of the frontier-model intelligence available through existing subscriptions. Combine independent perspectives on one change with a separate verification pass; more models do not guarantee a correct conclusion.
+
+## MapReduce contract
+
+```text
+Same Git change -> independent reviewers in parallel -> leader verification -> report
+Report -> separate user approval -> isolated patch and test results
+```
+
+- Map: Let Triad launch at most one reviewer per runnable provider. Each gets the same complete change and its own disposable snapshot, with a different review focus. Do not split files between models or launch extra reviewers to accumulate votes.
+- Reduce: Treat Map outputs as claims, not votes. The leader must inspect the code independently, validate each reachable trigger and consequence, deduplicate overlapping claims, and classify findings as `accepted`, `needs-human`, or `rejected`. Agreement between reviewers is supporting context, never proof.
+- Act: Present the report before any fix. Only a separately approved `triad fix <run-id>` processes accepted findings in another disposable snapshot. Distinguish agent-reported test results from tests independently run and observed.
 
 ## Model team
 
-Triad pins the intended subscription models; do not silently substitute API-backed or weaker models:
+Triad's built-in subscription model defaults are listed below. Respect explicit provider/model overrides and report the actual models from the run manifest; do not silently substitute API-backed or weaker models:
 
 - Claude: `claude-fable-5-1` for architecture and data flow.
 - Codex: `gpt-6-astra` with `max` effort and Standard processing (Fast mode disabled) for correctness and concurrency.
 - Kimi: `kimi-code/k3` for regressions and API contracts.
-- Cursor: `grok-4.6-fast`, resolved to `cursor-grok-4.6-high-fast`, for adversarial and cross-file analysis.
-
-Treat Map outputs as claims, not votes. The reducer must inspect the code independently, validate each reachable trigger and consequence, deduplicate overlapping claims, and classify findings as `accepted`, `needs-human`, or `rejected`. Agreement between reviewers is supporting context, never proof.
+- Cursor: `grok-4.7-fast`, resolved to `grok-4.7-high-fast`, for adversarial and cross-file analysis.
 
 ## Lazy-senior review policy
 
@@ -396,16 +405,18 @@ Treat Map outputs as claims, not votes. The reducer must inspect the code indepe
 - Select the target that matches the request: a PR number or URL, `--base REF`, `--commit SHA`, or `--uncommitted`.
 - Use `--providers auto --leader auto` unless the user pins providers or a leader.
 - Use `--require-all` only when the user explicitly requires every selected provider. Otherwise allow quota or availability failures to produce clearly reported degraded coverage.
-- For a long interactive review, run `triad review ... --detach --json`, capture the run ID, monitor it with `triad status <run-id> --json` or `triad follow <run-id> --json`, and present `triad report <run-id>` when terminal.
+- Let Triad handle observed quota state, cooldowns, and reset times. An `unknown` balance can be runnable; do not invent remaining usage, make separate model-call probes, or bypass an exhausted pinned leader by silently choosing another provider.
+- For a long interactive review, run `triad review ... --detach --json`, capture the run ID, monitor it with `triad status <run-id> --json` or `triad follow <run-id> --json`, and present `triad report <run-id>` once review reaches `awaiting_approval`. If the run fails or is cancelled, report that state and any available partial findings.
 - For CI or a report-only check, run `triad review ... --dry-run --json`. Exit `0` means no accepted or needs-human findings, `2` means blocking findings, and `3` means a selected provider, reducer, or protocol failure. Add `--require-all` only when missing optional providers must fail CI.
+- `--dry-run` still calls models, consumes subscription quota, and saves run artifacts. It cannot be combined with `--detach` or followed by `triad fix`; use a normal review when an approved fix may follow. For zero-model-call pipeline validation, run `cargo test --test e2e_fake` from a Triad source checkout instead.
 - Use `triad doctor --refresh --json` when the user asks about authentication/availability or a provider fails discovery. It performs status checks, not model-call probes.
-- In the final response, state participating and skipped providers, degraded coverage, leader/model changes, and the report path or run ID. Do not present a partially completed run as a completed review.
+- In the final response, state the reviewed base/head revisions, participating and skipped providers with reasons, degraded coverage, actual leader/model, verdicts, and the report path or run ID. `awaiting_approval` means the review is ready for the user, not that a fix was made. Do not present an active or failed run as a completed review.
 
 ## Safety and approval
 
 - Keep subscription login only. Never introduce vendor API keys, API billing, automatic overage, Claude `-p`, Agent SDK, or ultrareview.
 - Never install a provider, start an interactive login, enable a disabled provider, or change account settings without explicit user approval.
-- Reviewers are passive: no edits, deletes, commits, pushes, branches, tags, GitHub comments or reviews, deployments, or external messages. They may inspect code and run existing local tests only inside disposable snapshots.
+- Reviewers and the reducer are passive: no edits, deletes, commits, pushes, branches, tags, GitHub comments or reviews, deployments, or external messages. They may inspect code and run existing local tests only inside disposable snapshots.
 - Show the completed report before any fix. Call `triad fix <run-id>` only after a separate explicit user approval of the patch stage.
 - A Triad fix only prepares an isolated patch and test results. Do not apply it to the source checkout, commit, push, or post externally unless the user separately asks for that action.
 "#;

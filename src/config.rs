@@ -49,7 +49,7 @@ impl Default for Config {
                     ProviderKind::Kimi => {
                         config.model = Some("kimi-code/k3".into());
                     }
-                    ProviderKind::Cursor => config.model = Some("grok-4.6-fast".into()),
+                    ProviderKind::Cursor => config.model = Some("grok-4.7-fast".into()),
                 }
                 (provider.as_str().to_string(), config)
             })
@@ -117,7 +117,7 @@ impl Config {
                 config.model.get_or_insert_with(|| "kimi-code/k3".into());
             }
             ProviderKind::Cursor => {
-                config.model.get_or_insert_with(|| "grok-4.6-fast".into());
+                config.model.get_or_insert_with(|| "grok-4.7-fast".into());
             }
         }
         config
@@ -153,6 +153,10 @@ mod tests {
     #[test]
     fn subscription_providers_keep_pinned_models_in_partial_config() {
         let mut config = Config::default();
+        assert_eq!(
+            config.provider(ProviderKind::Cursor).model.as_deref(),
+            Some("grok-4.7-fast")
+        );
         for provider in [
             ProviderKind::Claude,
             ProviderKind::Kimi,
@@ -179,7 +183,7 @@ mod tests {
         );
         assert_eq!(
             config.provider(ProviderKind::Cursor).model.as_deref(),
-            Some("grok-4.6-fast")
+            Some("grok-4.7-fast")
         );
     }
 }

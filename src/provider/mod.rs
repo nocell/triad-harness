@@ -37,6 +37,8 @@ const CHATGPT_BUNDLED_CODEX: &str = "/Applications/ChatGPT.app/Contents/Resource
 const MIN_CODEX_CLI_VERSION: (u64, u64, u64) = (0, 145, 0);
 const CURSOR_GROK_4_6_MODEL: &str = "cursor-grok-4.6-high";
 const CURSOR_GROK_4_6_FAST_MODEL: &str = "cursor-grok-4.6-high-fast";
+const CURSOR_GROK_4_7_MODEL: &str = "grok-4.7-high";
+const CURSOR_GROK_4_7_FAST_MODEL: &str = "grok-4.7-high-fast";
 
 pub(crate) fn apply_external_action_guards(spec: &mut CommandSpec, empty_gh_config: &Path) {
     spec.remove_env
@@ -391,9 +393,11 @@ impl ProviderAdapter {
 }
 
 fn cursor_model_argument(configured: Option<&str>) -> String {
-    match configured.unwrap_or("grok-4.6-fast") {
+    match configured.unwrap_or("grok-4.7-fast") {
         "grok-4.6" => CURSOR_GROK_4_6_MODEL.into(),
         "grok-4.6-fast" => CURSOR_GROK_4_6_FAST_MODEL.into(),
+        "grok-4.7" => CURSOR_GROK_4_7_MODEL.into(),
+        "grok-4.7-fast" => CURSOR_GROK_4_7_FAST_MODEL.into(),
         model => model.to_string(),
     }
 }
@@ -986,13 +990,28 @@ mod tests {
     }
 
     #[test]
+    fn cursor_model_aliases_preserve_explicit_overrides() {
+        for (configured, expected) in [
+            (None, "grok-4.7-high-fast"),
+            (Some("grok-4.7-fast"), "grok-4.7-high-fast"),
+            (Some("grok-4.7"), "grok-4.7-high"),
+            (Some("grok-4.7-xhigh"), "grok-4.7-xhigh"),
+            (Some("grok-4.6-fast"), "cursor-grok-4.6-high-fast"),
+            (Some("grok-4.6"), "cursor-grok-4.6-high"),
+            (Some("custom-model"), "custom-model"),
+        ] {
+            assert_eq!(cursor_model_argument(configured), expected);
+        }
+    }
+
+    #[test]
     fn cursor_reviewer_is_trusted_read_only_grok_without_force() {
         let temp = tempfile::tempdir().unwrap();
         let adapter = ProviderAdapter {
             kind: ProviderKind::Cursor,
             binary: "cursor-agent".into(),
             version: None,
-            model: Some("grok-4.6-fast".into()),
+            model: Some("grok-4.7-fast".into()),
             reasoning_effort: None,
         };
         let spec = adapter.command_spec(
@@ -1003,7 +1022,7 @@ mod tests {
         assert!(
             spec.args
                 .windows(2)
-                .any(|values| values == ["--model", "cursor-grok-4.6-high-fast"])
+                .any(|values| values == ["--model", "grok-4.7-high-fast"])
         );
         assert!(spec.args.iter().any(|value| value == "--trust"));
         assert!(
@@ -1036,7 +1055,7 @@ mod tests {
             kind: ProviderKind::Cursor,
             binary: "cursor-agent".into(),
             version: None,
-            model: Some("grok-4.6-fast".into()),
+            model: Some("grok-4.7-fast".into()),
             reasoning_effort: None,
         };
         let spec = adapter.command_spec(
@@ -1194,7 +1213,7 @@ mod tests {
             kind: ProviderKind::Cursor,
             binary: script,
             version: None,
-            model: Some("grok-4.6-fast".into()),
+            model: Some("grok-4.7-fast".into()),
             reasoning_effort: None,
         };
         let output = adapter

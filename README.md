@@ -56,7 +56,7 @@ Supported providers:
 - Claude Code through an interactive `claude --bg` subscription session, pinned to `claude-fable-5-1` — never `claude -p` or Agent SDK usage.
 - Codex CLI through ChatGPT login, pinned to `gpt-6-astra` with `max` reasoning and Standard processing; Fast mode is explicitly disabled.
 - Kimi Code through membership login, pinned to `kimi-code/k3`.
-- Cursor Agent through browser login, pinned to `grok-4.6-fast` (resolved to the current CLI model ID `cursor-grok-4.6-high-fast`).
+- Cursor Agent through browser login, pinned to `grok-4.7-fast` (resolved to the current CLI model ID `grok-4.7-high-fast`).
 
 Triad never reads vendor OAuth tokens and removes known API-key variables from every child process. Reviewers operate in independent disposable Git clones; the source checkout is not modified.
 

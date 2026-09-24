@@ -130,14 +130,14 @@ all="$*"
 case " $all " in *" --trust "*) ;; *) echo 'Workspace Trust Required' >&2; exit 95 ;; esac
 case " $all " in *" --sandbox enabled "*) ;; *) echo 'Cursor sandbox was not enabled' >&2; exit 96 ;; esac
 case " $all " in *" --mode ask "*) ;; *) echo 'Cursor reviewer was not read-only' >&2; exit 97 ;; esac
-case " $all " in *" --model cursor-grok-4.6-high-fast "*) ;; *) echo 'Cursor model was not resolved to the installed Grok 4.6 Fast ID' >&2; exit 98 ;; esac
+case " $all " in *" --model grok-4.7-high-fast "*) ;; *) echo 'Cursor model was not resolved to the installed Grok 4.7 High Fast ID' >&2; exit 98 ;; esac
 case " $all " in *" --force "*|*" --yolo "*|*" -f "*) echo 'Cursor unsafe force flag was passed' >&2; exit 99 ;; esac
 for flag in --single-turn --disable-indexing --disable-codebase-ref; do
   case " $all " in *" $flag "*) ;; *) echo "Cursor isolation flag missing: $flag" >&2; exit 100 ;; esac
 done
 if [ -z "$CURSOR_CONFIG_DIR" ] || [ ! -f "$CURSOR_CONFIG_DIR/mcp.json" ]; then echo 'Cursor inherited global config or MCPs' >&2; exit 100; fi
 if [ ! -f "$(dirname "$CURSOR_CONFIG_DIR")/disabled-mcps.json" ]; then echo 'Cursor MCP audit file missing' >&2; exit 101; fi
-echo '{{"type":"system","subtype":"init","apiKeySource":"login","model":"Grok 4.6","session_id":"cursor-1"}}'
+echo '{{"type":"system","subtype":"init","apiKeySource":"login","model":"Grok 4.7 High Fast","session_id":"cursor-1"}}'
 echo '{{"type":"result","result":"{{\\"findings\\":[]}}","session_id":"cursor-1"}}'
 "#
         ),
@@ -166,7 +166,7 @@ binary = "{}"
 [providers.cursor]
 enabled = true
 binary = "{}"
-model = "grok-4.6-fast"
+model = "grok-4.7-fast"
 "#,
         bin.join("claude").display(),
         bin.join("codex").display(),
