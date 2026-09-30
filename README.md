@@ -1,5 +1,11 @@
 # Triad
 
+To install, paste this prompt into your coding agent:
+
+```plaintext
+Install Triad and its skills for all supported agents by following these instructions: https://raw.githubusercontent.com/nocell/triad-harness/main/docs/install-skills-prompt.txt
+```
+
 Triad is a local Rust CLI that reviews one Git change with every available subscription-backed coding agent, consolidates the findings, and prepares a patch only after a separate approval command.
 
 Triad is an independent project and is not affiliated with Anthropic, OpenAI, Moonshot AI, Cursor, or xAI.
@@ -219,6 +225,8 @@ triad install-skill --host all --yes
 ```
 
 The Codex skill is installed as `$triad` under `~/.codex/skills/triad`; use `/skills` to find it in Codex. It covers interactive reviews, CI dry runs, provider diagnostics, and approval-gated isolated fixes. The skills stop after the report and prohibit calling `triad fix` until the user separately approves the patch stage.
+
+`--host all` writes all three skill directories, even if an agent is not installed yet. It does not install the agent applications. Cursor participates as a review provider, but the built-in skill installer does not currently install a Cursor skill. Re-running the command refreshes the skills from the installed Triad version, not from GitHub; update Triad first when you want newer skill instructions.
 
 ## Development
 

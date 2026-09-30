@@ -1,0 +1,18 @@
+Install the Triad review skill globally for Codex, Claude Code, and Kimi Code.
+Use the official repository: https://github.com/nocell/triad-harness.
+
+If `triad` is not installed, install it from that repository with
+`cargo install --git https://github.com/nocell/triad-harness --locked`.
+If Cargo is unavailable, ask me which installation method to use.
+
+Before overwriting any existing Triad skill files, preserve a backup of them.
+Run `triad install-skill --host all --yes`.
+Verify that SKILL.md exists and has matching content in:
+- ~/.codex/skills/triad/
+- ~/.claude/skills/triad/
+- ~/.kimi-code/skills/triad/
+Also verify ~/.codex/skills/triad/agents/openai.yaml exists.
+Report the installed paths and how to invoke the skill.
+
+Do not install or update vendor agent CLIs, start logins, change credentials
+or account settings, or run a review or fix as part of this setup.
