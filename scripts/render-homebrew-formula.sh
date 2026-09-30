@@ -23,7 +23,6 @@ darwin_arm64_sha=$(awk '$2 ~ /darwin-arm64\.tar\.gz$/ {print $1}' "$sums_file")
 darwin_x64_sha=$(awk '$2 ~ /darwin-x64\.tar\.gz$/ {print $1}' "$sums_file")
 linux_arm64_sha=$(awk '$2 ~ /linux-arm64\.tar\.gz$/ {print $1}' "$sums_file")
 linux_x64_sha=$(awk '$2 ~ /linux-x64\.tar\.gz$/ {print $1}' "$sums_file")
-version=${release_tag#v}
 
 case "$darwin_arm64_sha$darwin_x64_sha$linux_arm64_sha$linux_x64_sha" in
   *[!0-9a-fA-F]*)
@@ -42,7 +41,6 @@ cat > "$output" <<EOF
 class Triad < Formula
   desc "Subscription-backed frontier-model MapReduce code review harness"
   homepage "https://github.com/$repository"
-  version "$version"
   license "MIT"
 
   on_macos do
