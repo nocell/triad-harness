@@ -115,6 +115,8 @@ Release archives and native packages contain statically linked musl binaries for
 
 ### Docker (x86_64 and ARM64)
 
+The image pins Codex CLI to `0.159.2` and checks the installed version during each architecture's build. Native installs use the discovered local CLI; `triad providers` reports its path and version.
+
 The GHCR image contains Triad plus Claude Code, Codex CLI, Kimi Code CLI, Cursor Agent, Node.js, Python, and Rust. `edge` tracks `main`; version tags and `latest` are published from a release tag as one multi-platform manifest for `linux/amd64` and `linux/arm64`.
 
 ```bash

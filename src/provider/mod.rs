@@ -1227,6 +1227,7 @@ mod tests {
     #[test]
     fn codex_version_gate_accepts_current_and_rejects_legacy_cli() {
         assert!(codex_cli_is_compatible("codex-cli 0.145.0"));
+        assert!(codex_cli_is_compatible("codex-cli 0.159.2"));
         assert!(codex_cli_is_compatible("codex-cli 0.148.0-alpha.15"));
         assert!(!codex_cli_is_compatible("codex-cli 0.142.3"));
         assert!(!codex_cli_is_compatible("codex-cli fake"));

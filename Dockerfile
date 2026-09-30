@@ -17,7 +17,7 @@ FROM node:24-bookworm-slim AS runtime
 
 ARG TARGETARCH
 ARG CLAUDE_CODE_VERSION=2.1.246
-ARG CODEX_CLI_VERSION=0.149.1
+ARG CODEX_CLI_VERSION=0.159.2
 ARG KIMI_CODE_VERSION=0.38.0
 ARG CURSOR_AGENT_BUILD=2026.08.11-e8db854
 ARG CURSOR_AGENT_SHA256_AMD64=bfff4bf6f4e9dd30c1d0ef0a70b6077b074015dd2948e4c50685d53afdcfce5a
@@ -60,7 +60,8 @@ RUN --mount=type=cache,target=/root/.npm \
       --allow-scripts=@anthropic-ai/claude-code,@moonshot-ai/kimi-code,node-pty \
       "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
       "@openai/codex@${CODEX_CLI_VERSION}" \
-      "@moonshot-ai/kimi-code@${KIMI_CODE_VERSION}"
+      "@moonshot-ai/kimi-code@${KIMI_CODE_VERSION}" && \
+    codex --version | grep -Fx "codex-cli ${CODEX_CLI_VERSION}"
 
 RUN case "$TARGETARCH" in \
       amd64) cursor_arch=x64; cursor_sha="$CURSOR_AGENT_SHA256_AMD64" ;; \
