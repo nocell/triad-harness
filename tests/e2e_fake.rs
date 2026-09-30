@@ -54,6 +54,10 @@ fn four_provider_pipeline(easy_mode: bool) {
     let bin = temp.path().join("bin");
     let config = temp.path().join("config");
     let data = temp.path().join("data");
+    let kimi_home = temp.path().join("kimi-home");
+    fs::create_dir_all(kimi_home.join("credentials")).unwrap();
+    // Discovery checks file presence only; fake providers never use real credentials.
+    fs::write(kimi_home.join("credentials/kimi.json"), "{}").unwrap();
     fs::create_dir_all(&repo).unwrap();
     fs::create_dir_all(&bin).unwrap();
     fs::create_dir_all(&config).unwrap();
@@ -200,6 +204,7 @@ model = "grok-4.7-fast"
     let mut review = Command::cargo_bin("triad").unwrap();
     let output = review
         .current_dir(&repo)
+        .env("KIMI_CODE_HOME", &kimi_home)
         .env("TRIAD_CONFIG_HOME", &config)
         .env("TRIAD_DATA_HOME", &data)
         .env("ANTHROPIC_API_KEY", "must-not-leak")
@@ -249,6 +254,15 @@ model = "grok-4.7-fast"
     let mut manifest: serde_json::Value =
         serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
     assert_eq!(manifest["easy_mode"], easy_mode);
+    assert_eq!(manifest["degraded"], false, "{manifest}");
+    assert!(
+        manifest["providers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|provider| { provider["selected"] == true && provider["status"] == "completed" }),
+        "{manifest}"
+    );
     for (provider, model) in [("claude", claude_model), ("codex", codex_model)] {
         let record = manifest["providers"]
             .as_array()
@@ -272,11 +286,13 @@ model = "grok-4.7-fast"
             .env("TRIAD_CONFIG_HOME", &config)
             .env("TRIAD_DATA_HOME", &data)
             .args(["resume", &run_id])
+            .env("KIMI_CODE_HOME", &kimi_home)
             .assert()
             .success();
         manifest = serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
         assert_eq!(manifest["easy_mode"], true);
         assert_eq!(manifest["state"], "awaiting_approval");
+        assert_eq!(manifest["degraded"], false, "{manifest}");
     }
     manifest["error"] = serde_json::Value::String("stale retry error".into());
     fs::write(
@@ -288,6 +304,7 @@ model = "grok-4.7-fast"
     let mut fix = Command::cargo_bin("triad").unwrap();
     let fix_output = fix
         .current_dir(&repo)
+        .env("KIMI_CODE_HOME", &kimi_home)
         .env("TRIAD_CONFIG_HOME", &config)
         .env("TRIAD_DATA_HOME", &data)
         .env("OPENAI_API_KEY", "must-not-leak")
@@ -320,6 +337,7 @@ model = "grok-4.7-fast"
     let dry_data = temp.path().join("data-dry");
     let dry_run = Command::cargo_bin("triad")
         .unwrap()
+        .env("KIMI_CODE_HOME", &kimi_home)
         .current_dir(&repo)
         .env("TRIAD_CONFIG_HOME", &config)
         .env("TRIAD_DATA_HOME", &dry_data)
