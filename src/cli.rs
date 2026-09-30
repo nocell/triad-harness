@@ -28,6 +28,9 @@ pub enum Command {
 
 #[derive(Debug, Args)]
 pub struct ProvidersArgs {
+    /// Inspect the Opus 5.5 / GPT-6.1 Sol preset without changing saved configuration.
+    #[arg(long)]
+    pub easy_mode: bool,
     #[arg(long)]
     pub json: bool,
     #[arg(long)]
@@ -36,6 +39,9 @@ pub struct ProvidersArgs {
 
 #[derive(Debug, Args)]
 pub struct DoctorArgs {
+    /// Inspect the Opus 5.5 / GPT-6.1 Sol preset without changing saved configuration.
+    #[arg(long)]
+    pub easy_mode: bool,
     #[arg(long)]
     pub refresh: bool,
     #[arg(long)]
@@ -69,6 +75,10 @@ pub enum ProviderCommand {
 #[derive(Debug, Args, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ReviewArgs {
     pub target: Option<String>,
+    /// Use Claude Opus 5.5 and Codex GPT-6.1 Sol for this run, including reduce and fix.
+    #[arg(long)]
+    #[serde(default)]
+    pub easy_mode: bool,
     #[arg(long, conflicts_with_all = ["commit", "uncommitted"])]
     pub base: Option<String>,
     #[arg(long, conflicts_with_all = ["base", "uncommitted"])]
@@ -149,6 +159,9 @@ pub enum SkillHost {
 pub struct InstallSkillArgs {
     #[arg(long, value_enum)]
     pub host: SkillHost,
+    /// Install the separate triad-easy skill, leaving triad unchanged.
+    #[arg(long)]
+    pub easy_mode: bool,
     #[arg(long)]
     pub yes: bool,
 }

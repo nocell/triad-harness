@@ -29,6 +29,26 @@ fn git(repo: &Path, args: &[&str]) -> String {
 
 #[test]
 fn four_provider_review_reduce_and_fix_leave_source_untouched() {
+    four_provider_pipeline(false);
+}
+
+#[test]
+fn easy_mode_survives_detach_resume_reduce_fix_and_dry_run() {
+    four_provider_pipeline(true);
+}
+
+fn four_provider_pipeline(easy_mode: bool) {
+    let mode_args: &[&str] = if easy_mode { &["--easy-mode"] } else { &[] };
+    let claude_model = if easy_mode {
+        "claude-opus-5-5"
+    } else {
+        "claude-fable-5-1"
+    };
+    let codex_model = if easy_mode {
+        "gpt-6.1-sol"
+    } else {
+        "gpt-6-astra"
+    };
     let temp = tempfile::tempdir().unwrap();
     let repo = temp.path().join("repo");
     let bin = temp.path().join("bin");
@@ -68,7 +88,7 @@ if [ "$1" = "--version" ]; then echo '2.1.fake (Claude Code)'; exit 0; fi
 if [ "$1" = "auth" ]; then echo '{{"loggedIn":true,"subscriptionType":"max","authMethod":"claude.ai"}}'; exit 0; fi
 {guard_checks}
 all="$*"
-case " $all " in *" --model claude-fable-5-1 "*) ;; *) echo 'Claude model was not pinned to Fable 5.1' >&2; exit 95 ;; esac
+case " $all " in *" --model {claude_model} "*) ;; *) echo 'Claude model did not match the run preset' >&2; exit 95 ;; esac
 settings=''
 while [ $# -gt 0 ]; do if [ "$1" = "--settings" ]; then settings="$2"; shift 2; else shift; fi; done
 out="$(dirname "$settings")/reviewer.hook.json"
@@ -86,7 +106,7 @@ if [ "$1" = "--version" ]; then echo 'codex-cli 0.148.0'; exit 0; fi
 if [ "$1" = "login" ]; then echo 'Logged in using ChatGPT'; exit 0; fi
 {guard_checks}
 all="$*"; final=''
-case " $all " in *" --model gpt-6-astra "*) ;; *) echo 'Codex model was not pinned to gpt-6-astra' >&2; exit 95 ;; esac
+case " $all " in *" --model {codex_model} "*) ;; *) echo 'Codex model did not match the run preset' >&2; exit 95 ;; esac
 case " $all " in *" --config model_reasoning_effort=max "*) ;; *) echo 'Codex reasoning was not set to max' >&2; exit 96 ;; esac
 case " $all " in *" --ignore-user-config "*) ;; *) echo 'Codex inherited unsafe user config' >&2; exit 97 ;; esac
 case " $all " in *" --disable hooks "*) ;; *) echo 'Codex hooks were not disabled' >&2; exit 98 ;; esac
@@ -154,10 +174,12 @@ cooldown_minutes = 15
 [providers.claude]
 enabled = true
 binary = "{}"
+model = "claude-fable-5-1"
 
 [providers.codex]
 enabled = true
 binary = "{}"
+model = "gpt-6-astra"
 
 [providers.kimi]
 enabled = true
@@ -173,7 +195,7 @@ model = "grok-4.7-fast"
         bin.join("kimi").display(),
         bin.join("cursor-agent").display()
     );
-    fs::write(config.join("config.toml"), config_body).unwrap();
+    fs::write(config.join("config.toml"), &config_body).unwrap();
 
     let mut review = Command::cargo_bin("triad").unwrap();
     let output = review
@@ -185,6 +207,7 @@ model = "grok-4.7-fast"
         .env("MOONSHOT_API_KEY", "must-not-leak")
         .env("CURSOR_API_KEY", "must-not-leak")
         .args(["review", "--base", &base, "--detach"])
+        .args(mode_args)
         .output()
         .unwrap();
     let stdout = String::from_utf8(output.stdout).unwrap();
@@ -225,6 +248,36 @@ model = "grok-4.7-fast"
     let manifest_path = run_dir.join("manifest.json");
     let mut manifest: serde_json::Value =
         serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+    assert_eq!(manifest["easy_mode"], easy_mode);
+    for (provider, model) in [("claude", claude_model), ("codex", codex_model)] {
+        let record = manifest["providers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["provider"] == provider)
+            .unwrap();
+        assert_eq!(record["model"], model);
+    }
+    if easy_mode {
+        // Simulate a stopped worker, then replay its saved request without a new mode flag.
+        manifest["state"] = "failed".into();
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        Command::cargo_bin("triad")
+            .unwrap()
+            .current_dir(&repo)
+            .env("TRIAD_CONFIG_HOME", &config)
+            .env("TRIAD_DATA_HOME", &data)
+            .args(["resume", &run_id])
+            .assert()
+            .success();
+        manifest = serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        assert_eq!(manifest["easy_mode"], true);
+        assert_eq!(manifest["state"], "awaiting_approval");
+    }
     manifest["error"] = serde_json::Value::String("stale retry error".into());
     fs::write(
         &manifest_path,
@@ -253,6 +306,11 @@ model = "grok-4.7-fast"
         serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
     assert_eq!(manifest["state"], "completed");
     assert_eq!(manifest["error"], serde_json::Value::Null);
+    assert_eq!(manifest["easy_mode"], easy_mode);
+    assert_eq!(
+        fs::read_to_string(config.join("config.toml")).unwrap(),
+        config_body
+    );
     assert_eq!(
         fs::read_to_string(repo.join("file.txt")).unwrap(),
         "base\nbug\n"
@@ -276,6 +334,7 @@ model = "grok-4.7-fast"
             "--dry-run",
             "--json",
         ])
+        .args(mode_args)
         .output()
         .unwrap();
     assert_eq!(
@@ -296,6 +355,7 @@ model = "grok-4.7-fast"
         serde_json::from_slice(&fs::read(dry_run_dir.join("manifest.json")).unwrap()).unwrap();
     assert_eq!(manifest["state"], "completed");
     assert_eq!(manifest["dry_run"], true);
+    assert_eq!(manifest["easy_mode"], easy_mode);
     assert!(!dry_run_dir.join("fix.patch").exists());
 }
 

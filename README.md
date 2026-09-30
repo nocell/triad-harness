@@ -158,6 +158,29 @@ Vendor extra-usage or overage must be disabled in each account. Most providers d
 
 ## Review
 
+### Easy mode
+
+```bash
+triad review --base origin/main --easy-mode
+triad providers --easy-mode --json
+triad doctor --easy-mode --refresh
+```
+
+`--easy-mode` pins Claude to **Opus 5.5** (`claude-opus-5-5`) and Codex to
+**GPT-6.1 Sol** (`gpt-6.1-sol`) for the run. It overrides those two configured
+model IDs without changing your saved configuration. Kimi, Cursor, provider
+selection, reasoning effort (Codex defaults to `max`), and Standard processing
+(Fast mode off) are unchanged. Without this flag, the existing Fable 5.1 / Astra
+defaults and your configured model overrides still apply.
+
+The preset is recorded in the run manifest and survives detached execution,
+`resume`, reduction, and a separately approved `triad fix <run-id>`. It also
+works with `--dry-run`; neither mode is quota-free. Unavailable models do not
+silently fall back to another model or API billing.
+
+Model IDs: [Claude models](https://platform.claude.com/docs/en/models/overview),
+[GPT-6.1 Sol](https://developers.openai.com/api/docs/models/gpt-6.1-sol).
+
 ```bash
 # Current branch against the remote default branch
 triad review
@@ -222,9 +245,14 @@ Triad can install thin invocation skills. This is also confirmation-gated:
 ```bash
 triad install-skill --host all
 triad install-skill --host all --yes
+
+# Optional second skill, alongside the normal one:
+triad install-skill --host all --easy-mode --yes
 ```
 
 The Codex skill is installed as `$triad` under `~/.codex/skills/triad`; use `/skills` to find it in Codex. It covers interactive reviews, CI dry runs, provider diagnostics, and approval-gated isolated fixes. The skills stop after the report and prohibit calling `triad fix` until the user separately approves the patch stage.
+
+The separate `$triad-easy` skill (Claude Code: `/triad-easy`) always starts reviews with `--easy-mode`: Claude Opus 5.5 and GPT-6.1 Sol, with Kimi/Cursor unchanged. It installs under each host's `skills/triad-easy` directory without replacing the regular `triad` skill. Both skills are standalone and share the same passive-review and approval rules.
 
 `--host all` writes all three skill directories, even if an agent is not installed yet. It does not install the agent applications. Cursor participates as a review provider, but the built-in skill installer does not currently install a Cursor skill. Re-running the command refreshes the skills from the installed Triad version, not from GitHub; update Triad first when you want newer skill instructions.
 

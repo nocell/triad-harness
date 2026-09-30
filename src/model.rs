@@ -192,6 +192,8 @@ pub struct RunManifest {
     pub patch_path: Option<PathBuf>,
     #[serde(default)]
     pub dry_run: bool,
+    #[serde(default)]
+    pub easy_mode: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

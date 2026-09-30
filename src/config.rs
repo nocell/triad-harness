@@ -71,6 +71,22 @@ impl Default for Config {
 }
 
 impl Config {
+    /// A run-local model preset. Never saves over the user's provider settings.
+    pub fn with_easy_mode(mut self, enabled: bool) -> Self {
+        if enabled {
+            for (provider, model) in [
+                (ProviderKind::Claude, "claude-opus-5-5"),
+                (ProviderKind::Codex, "gpt-6.1-sol"),
+            ] {
+                self.providers
+                    .entry(provider.as_str().into())
+                    .or_default()
+                    .model = Some(model.into());
+            }
+        }
+        self
+    }
+
     pub fn load() -> Result<Self> {
         let path = Self::path()?;
         if !path.exists() {
@@ -127,6 +143,51 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn easy_mode_only_overrides_claude_and_codex_models() {
+        let mut original = Config::default();
+        let codex = original.providers.get_mut("codex").unwrap();
+        codex.model = Some("custom-model".into());
+        codex.reasoning_effort = Some("high".into());
+        codex.binary = Some("/custom/codex".into());
+        codex.enabled = false;
+        let easy = original.clone().with_easy_mode(true);
+        assert_eq!(
+            easy.provider(ProviderKind::Claude).model.as_deref(),
+            Some("claude-opus-5-5")
+        );
+        let codex = easy.provider(ProviderKind::Codex);
+        assert_eq!(codex.model.as_deref(), Some("gpt-6.1-sol"));
+        assert_eq!(codex.reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(codex.binary, Some("/custom/codex".into()));
+        assert!(!codex.enabled);
+        for kind in [ProviderKind::Kimi, ProviderKind::Cursor] {
+            assert_eq!(easy.provider(kind).model, original.provider(kind).model);
+        }
+        assert_eq!(
+            original
+                .clone()
+                .with_easy_mode(false)
+                .provider(ProviderKind::Codex)
+                .model
+                .as_deref(),
+            Some("custom-model")
+        );
+        assert_eq!(
+            original.provider(ProviderKind::Claude).model.as_deref(),
+            Some("claude-fable-5-1")
+        );
+        original.providers.clear();
+        assert_eq!(
+            original
+                .with_easy_mode(true)
+                .provider(ProviderKind::Codex)
+                .reasoning_effort
+                .as_deref(),
+            Some("max")
+        );
+    }
 
     #[test]
     fn codex_defaults_to_astra_with_max_reasoning_even_in_partial_config() {

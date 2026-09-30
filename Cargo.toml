@@ -1,6 +1,6 @@
 [package]
 name = "triad-harness"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "Subscription-backed frontier-model MapReduce code review harness"
 license = "MIT"

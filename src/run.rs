@@ -104,6 +104,7 @@ pub async fn review_command(mut args: ReviewArgs) -> Result<i32> {
             report_path: None,
             patch_path: None,
             dry_run: args.dry_run,
+            easy_mode: args.easy_mode,
         })?;
     }
     if detach {
@@ -338,15 +339,20 @@ pub async fn internal_command(args: InternalArgs) -> Result<i32> {
 
 pub async fn install_skill_command(args: InstallSkillArgs) -> Result<i32> {
     let home = dirs::home_dir().context("home directory unavailable")?;
+    let skill_name = if args.easy_mode {
+        "triad-easy"
+    } else {
+        "triad"
+    };
     let mut targets = Vec::new();
     match args.host {
-        SkillHost::Codex => targets.push((home.join(".codex/skills/triad"), true)),
-        SkillHost::Claude => targets.push((home.join(".claude/skills/triad"), false)),
-        SkillHost::Kimi => targets.push((home.join(".kimi-code/skills/triad"), false)),
+        SkillHost::Codex => targets.push((home.join(".codex/skills").join(skill_name), true)),
+        SkillHost::Claude => targets.push((home.join(".claude/skills").join(skill_name), false)),
+        SkillHost::Kimi => targets.push((home.join(".kimi-code/skills").join(skill_name), false)),
         SkillHost::All => {
-            targets.push((home.join(".codex/skills/triad"), true));
-            targets.push((home.join(".claude/skills/triad"), false));
-            targets.push((home.join(".kimi-code/skills/triad"), false));
+            targets.push((home.join(".codex/skills").join(skill_name), true));
+            targets.push((home.join(".claude/skills").join(skill_name), false));
+            targets.push((home.join(".kimi-code/skills").join(skill_name), false));
         }
     }
     for (target, codex) in &targets {
@@ -427,6 +433,51 @@ Triad's built-in subscription model defaults are listed below. Respect explicit 
 policy:
   allow_implicit_invocation: true
 "#;
+    let (skill, openai_yaml) = if args.easy_mode {
+        (
+            r#"---
+name: triad-easy
+description: Run Triad Easy subscription-backed MapReduce reviews with Claude Opus 5.5 and GPT-6.1 Sol. Use when the user asks for Triad Easy or an easy-mode cross-model code review, provider check, or run follow-up.
+---
+
+# Triad Easy
+
+Use the installed `triad` CLI in the target Git repository. This is a standalone skill; the regular `triad` skill is not required.
+
+## Mode and models
+
+- Always add `--easy-mode` to `review`, `providers`, and `doctor`. It selects Claude `claude-opus-5-5` and Codex `gpt-6.1-sol` for this run without changing saved configuration. Kimi and Cursor keep their configured models and all providers keep their enabled/disabled settings.
+- Codex keeps its configured reasoning effort (default `max`) and Standard processing (Fast mode disabled). Easy mode is a model preset, not a promise of lower cost, latency, or reasoning effort.
+- If the CLI does not support `--easy-mode`, report that Triad needs updating; never silently run the normal model preset instead.
+- `resume`, `status`, `follow`, `report`, and `fix` take the run ID, not `--easy-mode`. Resume and fix inherit the saved mode. Report actual models from the manifest and disclose any mismatch or degraded coverage.
+
+## MapReduce review
+
+- Choose the requested PR number/URL, `--base REF`, `--commit SHA`, or `--uncommitted`. Default to `--providers auto --leader auto`; respect user-pinned providers and leaders. Use `--require-all` only if requested.
+- Start a long review with `triad review <target/options> --easy-mode --providers auto --leader auto --detach --json`. Capture its run ID; monitor with `triad status <run-id> --json` or `triad follow <run-id> --json`.
+- Each runnable provider gets the same full change in its own disposable snapshot. Do not split files among models or add extra reviewers for voting. The reducer independently verifies claims, deduplicates them, and classifies `accepted`, `needs-human`, and `rejected`; agreement is not proof.
+- Follow a lazy-senior policy: report concrete correctness, security, user-impact, or objective maintainability problems. Prefer small local fixes; do not demand speculative refactors, abstractions, cleanup, or textbook DRY. Safe code may need no findings.
+- Present `triad report <run-id>` when the run reaches `awaiting_approval`, including exact base/head revisions, participating/skipped providers and reasons, actual leader/models, verdicts, and report path. Do not present active or failed runs as completed reviews. Distinguish agent-reported tests from independently observed tests.
+- CI/report-only: `triad review <target/options> --easy-mode --dry-run --json`. Exit 0 means no accepted/needs-human findings, 2 blocking findings, and 3 provider/reducer/protocol failure. Dry runs still call models and consume quota; they cannot use `--detach` or be followed by a fix. Zero-model-call validation uses `cargo test --test e2e_fake` from Triad source.
+- For requested availability/auth checks, use `triad doctor --easy-mode --refresh --json` or `triad providers --easy-mode --json`. Do not make model-call probes or invent remaining usage. Let the scheduler enforce cooldowns and pinned-leader failures.
+
+## Safety and approval
+
+- Subscription login only: no vendor API keys, API billing, automatic overage, Claude `-p`, Agent SDK, or ultrareview. Do not install providers, start interactive logins, enable disabled providers, or change account settings without explicit approval.
+- Reviewers and the reducer are passive: inspect code and run existing local tests only in disposable snapshots. No edits/deletes, commits, pushes, branches/tags, GitHub comments/reviews, deployments, or external messages.
+- Stop after presenting the report. Run `triad fix <run-id>` only after separate explicit user approval. It prepares an isolated patch and test results; applying the patch, committing, pushing, or publishing needs separate authorization.
+"#,
+            r#"interface:
+  display_name: "Triad Easy"
+  short_description: "MapReduce reviews with Opus 5.5 and GPT-6.1 Sol"
+  default_prompt: "Use $triad-easy to run a passive lazy-senior MapReduce review with --easy-mode, then present the verified report without making changes."
+policy:
+  allow_implicit_invocation: true
+"#,
+        )
+    } else {
+        (skill, openai_yaml)
+    };
     for (target, codex) in targets {
         fs::create_dir_all(&target)?;
         storage::atomic_write(&target.join("SKILL.md"), skill.as_bytes())?;
@@ -455,8 +506,9 @@ async fn run_review_pipeline_inner(run_id: &str, args: &ReviewArgs) -> Result<i3
     let run_dir = storage::run_dir(run_id)?;
     let _lock = RunLock::acquire(&run_dir)?;
     update_state(run_id, RunState::Discovering, None)?;
-    let config = Config::load()?;
-    let (adapters, statuses) = scheduler::select(&args.providers, args.require_all).await?;
+    let config = Config::load()?.with_easy_mode(args.easy_mode);
+    let (adapters, statuses) =
+        scheduler::select(&config, &args.providers, args.require_all).await?;
     let target = git::resolve_target(args, &run_dir).await?;
     let context_snapshot = run_dir.join("snapshots/context");
     git::create_snapshot(
@@ -790,8 +842,8 @@ async fn run_fix_pipeline_inner(
     if selected.is_empty() {
         anyhow::bail!("no accepted findings selected for fixing");
     }
-    let config = Config::load()?;
-    let (available, _) = scheduler::select("auto", false).await?;
+    let config = Config::load()?.with_easy_mode(manifest.easy_mode);
+    let (available, _) = scheduler::select(&config, "auto", false).await?;
     let available_kinds: Vec<_> = available.iter().map(|adapter| adapter.kind).collect();
     let leader = if requested_leader == "auto" {
         manifest
@@ -882,6 +934,14 @@ async fn run_fix_pipeline_inner(
 }
 
 fn print_manifest(manifest: &RunManifest) {
+    println!(
+        "mode: {}",
+        if manifest.easy_mode {
+            "easy"
+        } else {
+            "default"
+        }
+    );
     println!(
         "run: {}\nstate: {:?}\ndegraded: {}\nleader: {}\ntarget: {}",
         manifest.id,

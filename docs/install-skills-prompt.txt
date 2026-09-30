@@ -1,17 +1,25 @@
-Install the Triad review skill globally for Codex, Claude Code, and Kimi Code.
+Install the Triad and Triad Easy review skills globally for Codex, Claude Code,
+and Kimi Code.
 Use the official repository: https://github.com/nocell/triad-harness.
 
-If `triad` is not installed, install it from that repository with
+If `triad` is not installed or `triad install-skill --help` lacks --easy-mode,
+install/update it from that repository with
 `cargo install --git https://github.com/nocell/triad-harness --locked`.
 If Cargo is unavailable, ask me which installation method to use.
 
 Before overwriting any existing Triad skill files, preserve a backup of them.
 Run `triad install-skill --host all --yes`.
-Verify that SKILL.md exists and has matching content in:
+Then run `triad install-skill --host all --easy-mode --yes`.
+Verify that SKILL.md exists and has matching content across hosts for each skill:
 - ~/.codex/skills/triad/
 - ~/.claude/skills/triad/
 - ~/.kimi-code/skills/triad/
-Also verify ~/.codex/skills/triad/agents/openai.yaml exists.
+- ~/.codex/skills/triad-easy/
+- ~/.claude/skills/triad-easy/
+- ~/.kimi-code/skills/triad-easy/
+Also verify agents/openai.yaml exists under both Codex skill directories.
+The two skills intentionally differ: Triad Easy uses --easy-mode (Opus 5.5
+and GPT-6.1 Sol); regular Triad keeps its normal model preset.
 Report the installed paths and how to invoke the skill.
 
 Do not install or update vendor agent CLIs, start logins, change credentials

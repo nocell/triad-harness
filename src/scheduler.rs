@@ -53,13 +53,15 @@ fn ledger_path() -> Result<PathBuf> {
 }
 
 pub async fn providers_command(args: ProvidersArgs) -> Result<i32> {
-    let statuses = inspect_all(args.refresh).await?;
+    let config = Config::load()?.with_easy_mode(args.easy_mode);
+    let statuses = inspect_with_config(&config).await?;
     print_statuses(&statuses, args.json)?;
     Ok(0)
 }
 
 pub async fn doctor_command(args: DoctorArgs) -> Result<i32> {
-    let statuses = inspect_all(args.refresh).await?;
+    let config = Config::load()?.with_easy_mode(args.easy_mode);
+    let statuses = inspect_with_config(&config).await?;
     print_statuses(&statuses, args.json)?;
     let missing: Vec<_> = statuses
         .iter()
@@ -183,10 +185,14 @@ async fn install(value: &str, yes: bool) -> Result<i32> {
 
 pub async fn inspect_all(_refresh: bool) -> Result<Vec<ProviderStatus>> {
     let config = Config::load()?;
+    inspect_with_config(&config).await
+}
+
+async fn inspect_with_config(config: &Config) -> Result<Vec<ProviderStatus>> {
     let ledger = ProviderLedger::load()?;
     let inspections = ProviderKind::ALL
         .into_iter()
-        .map(|kind| provider::inspect(&config, kind));
+        .map(|kind| provider::inspect(config, kind));
     let mut statuses = join_all(inspections).await;
     for status in &mut statuses {
         let entry = ledger.entry(status.provider);
@@ -232,11 +238,11 @@ fn print_statuses(statuses: &[ProviderStatus], json: bool) -> Result<()> {
 }
 
 pub async fn select(
+    config: &Config,
     provider_arg: &str,
     require_all: bool,
 ) -> Result<(Vec<ProviderAdapter>, Vec<ProviderStatus>)> {
-    let config = Config::load()?;
-    let statuses = inspect_all(false).await?;
+    let statuses = inspect_with_config(config).await?;
     let requested: Vec<ProviderKind> = if provider_arg == "auto" {
         ProviderKind::ALL.to_vec()
     } else {
@@ -252,7 +258,7 @@ pub async fn select(
             .find(|status| status.provider == *kind)
             .context("provider status missing")?;
         if status.runnable(Utc::now()) {
-            if let Some(mut adapter) = provider::discover(&config, *kind) {
+            if let Some(mut adapter) = provider::discover(config, *kind) {
                 adapter.version = status.version.clone();
                 selected.push(adapter);
             }
