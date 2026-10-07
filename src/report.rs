@@ -1,11 +1,15 @@
 use crate::model::{FindingsEnvelope, ProviderKind, RawFinding, ReducedFinding, ReductionEnvelope};
-use anyhow::Result;
+use anyhow::{Result, bail, ensure};
 use regex::Regex;
-use serde_json::json;
+use serde_json::{Value, json};
 use std::{collections::BTreeMap, fs, path::Path};
 
 pub fn write_reviewer_schema(path: &Path) -> Result<()> {
-    let schema = json!({
+    crate::storage::write_json(path, &reviewer_schema())
+}
+
+fn reviewer_schema() -> Value {
+    json!({
         "type": "object",
         "additionalProperties": false,
         "properties": {
@@ -32,12 +36,19 @@ pub fn write_reviewer_schema(path: &Path) -> Result<()> {
             }
         },
         "required": ["findings"]
-    });
-    crate::storage::write_json(path, &schema)
+    })
 }
 
 pub fn write_reducer_schema(path: &Path) -> Result<()> {
-    let schema = json!({
+    crate::storage::write_json(path, &reducer_schema())
+}
+
+fn reducer_schema() -> Value {
+    let sources: Vec<_> = ProviderKind::ALL
+        .into_iter()
+        .map(ProviderKind::as_str)
+        .collect();
+    json!({
         "type": "object",
         "additionalProperties": false,
         "properties": {
@@ -58,19 +69,22 @@ pub fn write_reducer_schema(path: &Path) -> Result<()> {
                         "trigger": {"type": "string"},
                         "impact": {"type": "string"},
                         "suggested_fix": {"type": "string"},
-                        "sources": {"type": "array", "items": {"type": "string", "enum": ["claude", "codex", "kimi", "cursor"]}}
+                        "sources": {"type": "array", "items": {"type": "string", "enum": sources}}
                     },
                     "required": ["id", "verdict", "title", "severity", "file", "line", "rationale", "evidence", "trigger", "impact", "suggested_fix", "sources"]
                 }
             }
         },
         "required": ["findings"]
-    });
-    crate::storage::write_json(path, &schema)
+    })
 }
 
 pub fn write_fixer_schema(path: &Path) -> Result<()> {
-    let schema = json!({
+    crate::storage::write_json(path, &fixer_schema())
+}
+
+fn fixer_schema() -> Value {
+    json!({
         "type": "object",
         "additionalProperties": false,
         "properties": {
@@ -92,8 +106,7 @@ pub fn write_fixer_schema(path: &Path) -> Result<()> {
             }
         },
         "required": ["summary", "tests"]
-    });
-    crate::storage::write_json(path, &schema)
+    })
 }
 
 pub fn reviewer_prompt(
@@ -111,6 +124,8 @@ pub fn reviewer_prompt(
         }
         ProviderKind::Kimi => "regressions, API contracts, compatibility, and missing tests",
         ProviderKind::Cursor => "adversarial scenarios and long-horizon cross-file failures",
+        ProviderKind::Zcode => "cross-file contracts, state transitions, and integration failures",
+        ProviderKind::ZcodeFlash => "edge cases, input boundaries, and simple regressions",
     };
     let provider_policy = if provider == ProviderKind::Codex {
         r#"
@@ -128,6 +143,7 @@ Codex-specific anti-overengineering policy:
     } else {
         format!("changes between base {base} and head {head}")
     };
+    let output_contract = reviewer_schema();
     format!(
         r#"You are one independent reviewer in Triad. Review only {scope} in this disposable checkout.
 
@@ -155,11 +171,16 @@ High-precision policy:
 - Every finding needs a reachable trigger and concrete consequence.
 - Exclude style, naming, speculative concerns, and pre-existing problems.
 - Return JSON only as {{"findings": [...]}}. An empty array is valid.
+
+Output contract (all fields are required; no extra fields):
+{output_contract}
+Use exactly these field names and enum values. Use null for an unknown line. Do not substitute issues, status, or nested location objects. Return {{"findings":[]}} only when no qualifying defect was found.
 "#
     )
 }
 
 pub fn reducer_prompt(provider: ProviderKind, base: &str, head: &str, uncommitted: bool) -> String {
+    let output_contract = reducer_schema();
     let scope = if uncommitted {
         "the working-tree changes relative to HEAD".to_string()
     } else {
@@ -186,12 +207,17 @@ Apply a lazy-senior gate: optimize for a safe, understandable merge rather than 
 {provider_policy}
 
 Classify every semantic issue as accepted, needs-human, or rejected. Deduplicate equivalent issues. Use stable IDs TRIAD-001, TRIAD-002, ... ordered by severity and file. Only accepted issues are eligible for fixing. Return JSON only matching the requested schema.
+
+Output contract (all fields are required; no extra fields):
+{output_contract}
+Return a single findings array containing every verdict, including rejected issues. Use findings, not issues; verdict, not status; and needs-human, not needs_human. Use null for an unknown line. Return {{"findings":[]}} only when there are no semantic issues to classify.
 "#
     )
 }
 
 pub fn fixer_prompt(provider: ProviderKind, findings: &[ReducedFinding]) -> Result<String> {
     let findings = serde_json::to_string_pretty(findings)?;
+    let output_contract = fixer_schema();
     let provider_policy = if provider == ProviderKind::Codex {
         r#"
 Codex-specific anti-overengineering rules:
@@ -215,16 +241,85 @@ Rules:
 - Leave all changes in the working tree.
 - Finish with JSON: {{"summary":"...","tests":[{{"command":"...","status":"passed|failed|not_run"}}]}}.
 {provider_policy}
+
+Output contract (all fields are required; no extra fields):
+{output_contract}
 "#
     ))
 }
 
 pub fn parse_findings(text: &str) -> Result<FindingsEnvelope> {
-    parse_json(text)
+    Ok(serde_json::from_value(parse_contract(
+        text,
+        &reviewer_schema(),
+    )?)?)
 }
 
 pub fn parse_reduction(text: &str) -> Result<ReductionEnvelope> {
-    parse_json(text)
+    Ok(serde_json::from_value(parse_contract(
+        text,
+        &reducer_schema(),
+    )?)?)
+}
+
+pub fn parse_fixer(text: &str) -> Result<Value> {
+    parse_contract(text, &fixer_schema())
+}
+
+fn parse_contract(text: &str, schema: &Value) -> Result<Value> {
+    let value: Value = parse_json(text)?;
+    validate_contract(&value, schema, "output")?;
+    Ok(value)
+}
+
+// Validate the small, fixed schema vocabulary generated above. Deserializing the
+// persistence structs alone is insufficient: their defaults tolerate missing
+// fields in old run files, which must not turn malformed model output into success.
+fn validate_contract(value: &Value, schema: &Value, path: &str) -> Result<()> {
+    let matches_type = |kind: &str| match kind {
+        "object" => value.is_object(),
+        "array" => value.is_array(),
+        "string" => value.is_string(),
+        "integer" => value.is_i64() || value.is_u64(),
+        "null" => value.is_null(),
+        _ => false,
+    };
+    let type_matches = match &schema["type"] {
+        Value::String(kind) => matches_type(kind),
+        Value::Array(kinds) => kinds.iter().filter_map(Value::as_str).any(matches_type),
+        _ => false,
+    };
+    ensure!(type_matches, "{path}: expected {}", schema["type"]);
+    if let Some(allowed) = schema["enum"].as_array() {
+        ensure!(
+            allowed.contains(value),
+            "{path}: value is not an allowed enum variant"
+        );
+    }
+    if let Some(object) = value.as_object() {
+        if let Some(required) = schema["required"].as_array() {
+            for key in required.iter().filter_map(Value::as_str) {
+                ensure!(
+                    object.contains_key(key),
+                    "{path}: missing required field `{key}`"
+                );
+            }
+        }
+        for (key, field) in object {
+            match schema["properties"].get(key) {
+                Some(field_schema) => {
+                    validate_contract(field, field_schema, &format!("{path}.{key}"))?;
+                }
+                None => bail!("{path}: unexpected field `{key}`"),
+            }
+        }
+    }
+    if let Some(items) = value.as_array() {
+        for (index, item) in items.iter().enumerate() {
+            validate_contract(item, &schema["items"], &format!("{path}[{index}]"))?;
+        }
+    }
+    Ok(())
 }
 
 pub fn parse_value(text: &str) -> Option<serde_json::Value> {
@@ -291,6 +386,7 @@ pub fn render_report(
     leader: ProviderKind,
     degraded: bool,
     providers: &[(ProviderKind, String)],
+    incomplete: Option<&str>,
     reduction: &ReductionEnvelope,
 ) -> String {
     let mut output = format!(
@@ -301,6 +397,11 @@ pub fn render_report(
             "all selected providers completed"
         }
     );
+    if let Some(error) = incomplete {
+        output = format!(
+            "# Incomplete Triad review {run_id}\n\nThis is not a completed review. No clean verdict or fix approval is available.\n\nReducer error: {error}\n\nRaw candidates are preserved in `provider-results.json`; any fallback findings require human verification. Retry with `triad resume {run_id}`.\n\n**Target:** {title}\n**Reducer:** {leader}\n\n"
+        );
+    }
     output.push_str("## Provider coverage\n\n");
     for (provider, status) in providers {
         output.push_str(&format!("- **{provider}:** {status}\n"));
@@ -311,6 +412,10 @@ pub fn render_report(
         ("Rejected", "rejected"),
     ] {
         output.push_str(&format!("\n## {title}\n\n"));
+        if incomplete.is_some() && verdict != "needs-human" {
+            output.push_str("Not evaluated: reducer did not complete.\n");
+            continue;
+        }
         let mut count = 0;
         for finding in reduction
             .findings
@@ -325,7 +430,11 @@ pub fn render_report(
             output.push_str(&format!("### {} — {}\n\n- Severity: `{}`\n- Location: `{}`\n- Sources: {}\n- Why: {}\n- Evidence: {}\n- Trigger: {}\n- Impact: {}\n- Suggested fix: {}\n\n", finding.id, finding.title, finding.severity, location, finding.sources.iter().map(ToString::to_string).collect::<Vec<_>>().join(", "), finding.rationale, finding.evidence, finding.trigger, finding.impact, finding.suggested_fix));
         }
         if count == 0 {
-            output.push_str("None.\n");
+            output.push_str(if incomplete.is_some() {
+                "No structured candidates could be recovered; inspect the raw provider results.\n"
+            } else {
+                "None.\n"
+            });
         }
     }
     output
@@ -378,6 +487,168 @@ mod tests {
     fn parses_fenced_findings() {
         let parsed = parse_findings("```json\n{\"findings\":[]}\n```").unwrap();
         assert!(parsed.findings.is_empty());
+    }
+
+    #[test]
+    fn every_provider_receives_the_exact_output_contract() {
+        for provider in ProviderKind::ALL {
+            assert!(
+                reviewer_prompt(provider, "base", "head", false)
+                    .contains(&reviewer_schema().to_string())
+            );
+            assert!(
+                reducer_prompt(provider, "base", "head", false)
+                    .contains(&reducer_schema().to_string())
+            );
+            assert!(
+                fixer_prompt(provider, &[])
+                    .unwrap()
+                    .contains(&fixer_schema().to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn missing_findings_never_becomes_an_empty_success() {
+        for text in ["{}", r#"{"issues":[]}"#, r#"{"findings":null}"#] {
+            assert!(parse_findings(text).is_err(), "{text}");
+            assert!(parse_reduction(text).is_err(), "{text}");
+        }
+        assert!(parse_reduction(r#"{"findings":[]}"#).is_ok());
+    }
+
+    fn valid_raw_finding() -> Value {
+        json!({
+            "title": "Reachable failure",
+            "severity": "high",
+            "confidence": "high",
+            "category": "correctness",
+            "file": "src/example.rs",
+            "line": null,
+            "claim": "A reachable input fails",
+            "evidence": "Observed local code path",
+            "trigger": "Input is empty",
+            "impact": "Request fails",
+            "suggested_fix": "Add a local guard"
+        })
+    }
+
+    fn valid_reduced_finding() -> Value {
+        json!({
+            "id": "TRIAD-001",
+            "verdict": "accepted",
+            "title": "Reachable failure",
+            "severity": "high",
+            "file": "src/example.rs",
+            "line": 1,
+            "rationale": "Confirmed current behavior",
+            "evidence": "Observed local code path",
+            "trigger": "Input is empty",
+            "impact": "Request fails",
+            "suggested_fix": "Add a local guard",
+            "sources": ["claude"]
+        })
+    }
+
+    #[test]
+    fn reviewer_contract_rejects_incomplete_or_invalid_findings() {
+        let valid = valid_raw_finding();
+        assert!(parse_findings(&json!({"findings": [valid.clone()]}).to_string()).is_ok());
+        for key in reviewer_schema()["properties"]["findings"]["items"]["required"]
+            .as_array()
+            .unwrap()
+        {
+            let mut incomplete = valid.clone();
+            incomplete
+                .as_object_mut()
+                .unwrap()
+                .remove(key.as_str().unwrap());
+            assert!(parse_findings(&json!({"findings": [incomplete]}).to_string()).is_err());
+        }
+        for (key, value) in [
+            ("confidence", json!("certain")),
+            ("severity", json!("urgent")),
+            ("line", json!("10")),
+            ("line", json!(1.5)),
+            ("line", json!(-1)),
+            ("unexpected", json!(true)),
+        ] {
+            let mut invalid = valid.clone();
+            invalid[key] = value;
+            assert!(parse_findings(&json!({"findings": [invalid]}).to_string()).is_err());
+        }
+    }
+
+    #[test]
+    fn reducer_contract_rejects_wrong_verdicts_and_missing_fields() {
+        let valid = valid_reduced_finding();
+        assert!(parse_reduction(&json!({"findings": [valid.clone()]}).to_string()).is_ok());
+        for key in reducer_schema()["properties"]["findings"]["items"]["required"]
+            .as_array()
+            .unwrap()
+        {
+            let mut incomplete = valid.clone();
+            incomplete
+                .as_object_mut()
+                .unwrap()
+                .remove(key.as_str().unwrap());
+            assert!(parse_reduction(&json!({"findings": [incomplete]}).to_string()).is_err());
+        }
+        for verdict in ["status", "confirmed", "needs_human", "", "ACCEPTED"] {
+            let mut invalid = valid.clone();
+            invalid["verdict"] = json!(verdict);
+            assert!(parse_reduction(&json!({"findings": [invalid]}).to_string()).is_err());
+        }
+        let mut invalid = valid.clone();
+        invalid.as_object_mut().unwrap().remove("verdict");
+        invalid["status"] = json!("accepted");
+        assert!(parse_reduction(&json!({"findings": [invalid]}).to_string()).is_err());
+    }
+
+    #[test]
+    fn reducer_accepts_every_registered_source_and_rejects_unknown_sources() {
+        let mut finding = valid_reduced_finding();
+        for provider in ProviderKind::ALL {
+            finding["sources"] = json!([provider.as_str()]);
+            let parsed =
+                parse_reduction(&json!({"findings": [finding.clone()]}).to_string()).unwrap();
+            assert_eq!(parsed.findings[0].sources, [provider]);
+        }
+        finding["sources"] = json!(["unregistered"]);
+        assert!(parse_reduction(&json!({"findings": [finding]}).to_string()).is_err());
+    }
+
+    #[test]
+    fn fixer_contract_requires_explicit_test_results() {
+        for text in [
+            "{}",
+            r#"{"summary":"done"}"#,
+            r#"{"summary":"done","tests":[{"command":"test","status":"ok"}]}"#,
+            r#"{"summary":"done","tests":[{"command":"test"}]}"#,
+        ] {
+            assert!(parse_fixer(text).is_err(), "{text}");
+        }
+        for status in ["passed", "failed", "not_run"] {
+            assert!(
+                parse_fixer(
+                    &json!({
+                        "summary": "Tests reported accurately",
+                        "tests": [{"command": "test", "status": status}]
+                    })
+                    .to_string()
+                )
+                .is_ok()
+            );
+        }
+    }
+
+    #[test]
+    fn fallback_preserves_valid_candidates_as_unverified() {
+        let candidate = json!({"findings": [valid_raw_finding()]}).to_string();
+        let fallback = fallback_reduction(&[(ProviderKind::Claude, candidate)]);
+        assert_eq!(fallback.findings.len(), 1);
+        assert_eq!(fallback.findings[0].verdict, "needs-human");
+        assert_eq!(fallback.findings[0].sources, [ProviderKind::Claude]);
     }
 
     #[test]

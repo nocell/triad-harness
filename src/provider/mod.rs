@@ -1,5 +1,7 @@
 mod claude;
+mod claude_trust;
 mod command;
+mod zcode;
 
 use crate::{
     config::Config,
@@ -7,7 +9,6 @@ use crate::{
 };
 use anyhow::{Context, Result};
 use chrono::Utc;
-use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -17,15 +18,33 @@ use std::{
 };
 use tokio::{process::Command, time::timeout};
 
-pub use command::{CommandSpec, ProviderFailure, ProviderFailureKind, classify_failure, redact};
+pub use command::{
+    CommandSpec, ProviderFailure, ProviderFailureKind, archive_previous_outputs, classify_failure,
+    redact, redact_log,
+};
 
 const SECRET_ENV_KEYS: &[&str] = &[
     "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_BASE_URL",
     "OPENAI_API_KEY",
+    "OPENAI_BASE_URL",
     "MOONSHOT_API_KEY",
     "KIMI_API_KEY",
     "CURSOR_API_KEY",
     "CURSOR_AUTH_TOKEN",
+    "ZAI_API_KEY",
+    "ZCODE_API_KEY",
+    "ZHIPU_API_KEY",
+    "ZHIPUAI_API_KEY",
+    "GLM_API_KEY",
+    "OPENROUTER_API_KEY",
+    "NODE_OPTIONS",
+    "NODE_PATH",
+    "LD_PRELOAD",
+    "DYLD_INSERT_LIBRARIES",
+    "DYLD_LIBRARY_PATH",
+    "DYLD_FRAMEWORK_PATH",
     "GH_TOKEN",
     "GITHUB_TOKEN",
     "GITLAB_TOKEN",
@@ -34,7 +53,21 @@ const SECRET_ENV_KEYS: &[&str] = &[
 
 const REVIEWER_POLICY: &str = "read_only_no_external_actions";
 const CHATGPT_BUNDLED_CODEX: &str = "/Applications/ChatGPT.app/Contents/Resources/codex";
-const MIN_CODEX_CLI_VERSION: (u64, u64, u64) = (0, 145, 0);
+// Check the adapter's actual CLI contract, not a release number. Backports,
+// bundled binaries and prereleases can expose the same safe interface.
+const CODEX_REQUIRED_FLAGS: &[&str] = &[
+    "--json",
+    "--ignore-user-config",
+    "--strict-config",
+    "--disable",
+    "--config",
+    "--output-schema",
+    "--output-last-message",
+    "--sandbox",
+    "--ignore-rules",
+    "--cd",
+    "--model",
+];
 const CURSOR_GROK_4_6_MODEL: &str = "cursor-grok-4.6-high";
 const CURSOR_GROK_4_6_FAST_MODEL: &str = "cursor-grok-4.6-high-fast";
 const CURSOR_GROK_4_7_MODEL: &str = "grok-4.7-high";
@@ -59,6 +92,7 @@ pub(crate) fn apply_external_action_guards(spec: &mut CommandSpec, empty_gh_conf
 
 pub fn prepare_snapshot(provider: ProviderKind, role: AgentRole, snapshot: &Path) -> Result<()> {
     match provider {
+        ProviderKind::Zcode | ProviderKind::ZcodeFlash => zcode::prepare_snapshot(role, snapshot)?,
         ProviderKind::Claude => {
             let agent_dir = snapshot.join(".claude/agents");
             std::fs::create_dir_all(&agent_dir)?;
@@ -156,6 +190,8 @@ pub struct ProviderAdapter {
     pub version: Option<String>,
     pub model: Option<String>,
     pub reasoning_effort: Option<String>,
+    pub fast_mode: bool,
+    pub ultracode: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -183,6 +219,9 @@ impl ProviderAdapter {
         if self.kind == ProviderKind::Claude {
             return claude::run(self, context).await;
         }
+        if self.kind.is_zcode() {
+            return zcode::run(self, context).await;
+        }
         self.run_streaming(context).await
     }
 
@@ -198,6 +237,8 @@ impl ProviderAdapter {
             provider_dir.join(format!("{:?}.stderr.log", context.role).to_ascii_lowercase());
         let final_path =
             provider_dir.join(format!("{:?}.final.txt", context.role).to_ascii_lowercase());
+        archive_previous_outputs(&[&final_path, &stdout_path, &stderr_path])
+            .map_err(ProviderFailure::internal)?;
         let profile_path = provider_dir.join("kimi-reviewer.md");
         let empty_skills = provider_dir.join("empty-skills");
         let empty_gh_config = provider_dir.join("empty-gh-config");
@@ -270,8 +311,8 @@ impl ProviderAdapter {
 
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        std::fs::write(&stdout_path, redact(&stdout)).map_err(ProviderFailure::internal)?;
-        std::fs::write(&stderr_path, redact(&stderr)).map_err(ProviderFailure::internal)?;
+        std::fs::write(&stdout_path, redact_log(&stdout)).map_err(ProviderFailure::internal)?;
+        std::fs::write(&stderr_path, redact_log(&stderr)).map_err(ProviderFailure::internal)?;
 
         if !output.status.success() {
             return Err(classify_failure(self.kind, &format!("{stdout}\n{stderr}")));
@@ -322,10 +363,20 @@ impl ProviderAdapter {
                     "--strict-config".into(),
                     "--disable".into(),
                     "hooks".into(),
-                    "--disable".into(),
+                    if self.fast_mode {
+                        "--enable"
+                    } else {
+                        "--disable"
+                    }
+                    .into(),
                     "fast_mode".into(),
                     "--config".into(),
-                    "service_tier=\"default\"".into(),
+                    if self.fast_mode {
+                        "service_tier=\"fast\""
+                    } else {
+                        "service_tier=\"default\""
+                    }
+                    .into(),
                     "--output-schema".into(),
                     context.schema_path.display().to_string(),
                     "--output-last-message".into(),
@@ -387,6 +438,9 @@ impl ProviderAdapter {
                 spec.args.push(context.prompt.clone());
             }
             ProviderKind::Claude => unreachable!("Claude has a background-session adapter"),
+            ProviderKind::Zcode | ProviderKind::ZcodeFlash => {
+                unreachable!("ZCode has an isolated subscription adapter")
+            }
         }
         spec
     }
@@ -461,32 +515,44 @@ pub fn aliases(provider: ProviderKind) -> &'static [&'static str] {
         ProviderKind::Codex => &["codex"],
         ProviderKind::Kimi => &["kimi"],
         ProviderKind::Cursor => &["cursor-agent", "agent"],
+        ProviderKind::Zcode | ProviderKind::ZcodeFlash => &["zcode"],
     }
 }
 
-pub fn discover(config: &Config, provider: ProviderKind) -> Option<ProviderAdapter> {
+pub async fn discover(config: &Config, provider: ProviderKind) -> Option<ProviderAdapter> {
     let provider_config = config.provider(provider);
-    let binary = provider_config.binary.or_else(|| {
-        if provider == ProviderKind::Codex {
-            return choose_codex_binary(
-                PathBuf::from(CHATGPT_BUNDLED_CODEX),
-                which::which("codex").ok(),
-            );
-        }
+    let binary = if let Some(binary) = provider_config.binary {
+        Some(binary)
+    } else if provider.is_zcode() {
+        zcode::discover_binary()
+    } else if provider == ProviderKind::Codex {
+        choose_codex_binary(
+            PathBuf::from(CHATGPT_BUNDLED_CODEX),
+            which::which("codex").ok(),
+            provider_config.fast_mode,
+        )
+        .await
+    } else {
         aliases(provider)
             .iter()
             .find_map(|name| which::which(name).ok())
-    })?;
+    }?;
     Some(ProviderAdapter {
         kind: provider,
         binary,
         version: None,
         model: provider_config.model,
         reasoning_effort: provider_config.reasoning_effort,
+        fast_mode: provider_config.fast_mode,
+        ultracode: provider_config.ultracode,
     })
 }
 
-fn choose_codex_binary(bundled: PathBuf, path_binary: Option<PathBuf>) -> Option<PathBuf> {
+async fn choose_codex_binary(
+    bundled: PathBuf,
+    path_binary: Option<PathBuf>,
+    fast_mode: bool,
+) -> Option<PathBuf> {
     let mut candidates = Vec::new();
     if bundled.is_file() {
         candidates.push(bundled);
@@ -496,28 +562,45 @@ fn choose_codex_binary(bundled: PathBuf, path_binary: Option<PathBuf>) -> Option
     {
         candidates.push(path_binary);
     }
-    candidates
-        .iter()
-        .find(|binary| codex_binary_is_compatible(binary))
-        .cloned()
-        .or_else(|| candidates.into_iter().next())
-}
-
-fn codex_binary_is_compatible(binary: &Path) -> bool {
-    let mut command = std::process::Command::new(binary);
-    command.arg("--version");
-    for key in SECRET_ENV_KEYS {
-        command.env_remove(key);
+    for binary in &candidates {
+        if inspect_codex_capabilities(binary, fast_mode).await.is_ok() {
+            return Some(binary.clone());
+        }
     }
-    command
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .is_some_and(|output| codex_cli_is_compatible(&String::from_utf8_lossy(&output.stdout)))
+    // Keep a candidate so inspection can report the missing capabilities.
+    candidates.into_iter().next()
 }
 
-pub fn for_kind(config: &Config, provider: ProviderKind) -> Result<ProviderAdapter> {
-    discover(config, provider).with_context(|| format!("{provider} CLI is not installed"))
+async fn inspect_codex_capabilities(binary: &Path, fast_mode: bool) -> Result<()> {
+    let help = command_text_sanitized(binary, &["exec", "--help"], Duration::from_secs(10))
+        .await
+        .context("cannot inspect Codex CLI capabilities via exec --help")?;
+    let missing = missing_codex_flags(&help, fast_mode);
+    if !missing.is_empty() {
+        anyhow::bail!(
+            "Codex CLI is missing required capabilities: {}. Choose a CLI supporting these options; Triad will not remove safety or output guarantees to run it.",
+            missing.join(", ")
+        );
+    }
+    Ok(())
+}
+
+fn missing_codex_flags(help: &str, fast_mode: bool) -> Vec<&'static str> {
+    let tokens: Vec<_> = help
+        .split(|c: char| !c.is_ascii_alphanumeric() && c != '-')
+        .collect();
+    CODEX_REQUIRED_FLAGS
+        .iter()
+        .copied()
+        .chain(fast_mode.then_some("--enable"))
+        .filter(|flag| !tokens.contains(flag))
+        .collect()
+}
+
+pub async fn for_kind(config: &Config, provider: ProviderKind) -> Result<ProviderAdapter> {
+    discover(config, provider)
+        .await
+        .with_context(|| format!("{provider} CLI is not installed"))
 }
 
 pub async fn inspect(config: &Config, provider: ProviderKind) -> ProviderStatus {
@@ -538,7 +621,7 @@ pub async fn inspect(config: &Config, provider: ProviderKind) -> ProviderStatus 
             retry_at: None,
         };
     }
-    let Some(mut adapter) = discover(config, provider) else {
+    let Some(mut adapter) = discover(config, provider).await else {
         return ProviderStatus {
             provider,
             enabled: true,
@@ -560,15 +643,9 @@ pub async fn inspect(config: &Config, provider: ProviderKind) -> ProviderStatus 
             .ok()
             .map(|v| first_line(&v));
     if provider == ProviderKind::Codex
-        && !adapter
-            .version
-            .as_deref()
-            .is_some_and(codex_cli_is_compatible)
+        && let Err(error) = inspect_codex_capabilities(&adapter.binary, adapter.fast_mode).await
     {
-        let version = adapter.version.as_deref().unwrap_or("unknown");
-        let message = format!(
-            "Triad requires Codex CLI >= 0.145.0; found {version}. Install a current official Codex CLI or use the one bundled with ChatGPT."
-        );
+        let message = redact(&format!("{error:#}"));
         return ProviderStatus {
             provider,
             enabled: true,
@@ -592,7 +669,9 @@ pub async fn inspect(config: &Config, provider: ProviderKind) -> ProviderStatus 
         version: adapter.version,
         auth: auth.clone(),
         auth_detail: detail,
-        usage: if auth == AuthState::Subscription {
+        usage: if auth == AuthState::Subscription
+            || (provider.is_zcode() && auth == AuthState::SubscriptionPending)
+        {
             crate::model::UsageState::Unknown
         } else {
             crate::model::UsageState::Unavailable
@@ -605,22 +684,10 @@ pub async fn inspect(config: &Config, provider: ProviderKind) -> ProviderStatus 
     }
 }
 
-fn codex_cli_is_compatible(version: &str) -> bool {
-    let Some(captures) = Regex::new(r"(?m)\b(\d+)\.(\d+)\.(\d+)")
-        .ok()
-        .and_then(|regex| regex.captures(version))
-    else {
-        return false;
-    };
-    let parsed = (1..=3)
-        .map(|index| captures[index].parse::<u64>().ok())
-        .collect::<Option<Vec<_>>>();
-    parsed
-        .map(|parts| (parts[0], parts[1], parts[2]) >= MIN_CODEX_CLI_VERSION)
-        .unwrap_or(false)
-}
-
 async fn inspect_auth(adapter: &ProviderAdapter) -> (AuthState, Option<String>) {
+    if adapter.kind.is_zcode() {
+        return zcode::inspect_auth(adapter).await;
+    }
     if adapter.kind == ProviderKind::Kimi && !kimi_oauth_credentials_present() {
         return (
             AuthState::NotAuthenticated,
@@ -632,6 +699,7 @@ async fn inspect_auth(adapter: &ProviderAdapter) -> (AuthState, Option<String>) 
         ProviderKind::Codex => &["login", "status"],
         ProviderKind::Kimi => &["doctor"],
         ProviderKind::Cursor => &["status"],
+        ProviderKind::Zcode | ProviderKind::ZcodeFlash => unreachable!(),
     };
     let output = command_text_sanitized(&adapter.binary, args, Duration::from_secs(15)).await;
     let Ok(output) = output else {
@@ -661,6 +729,7 @@ async fn inspect_auth(adapter: &ProviderAdapter) -> (AuthState, Option<String>) 
             lowered.contains("authenticated") && !lowered.contains("not authenticated")
                 || lowered.contains("logged in") && !lowered.contains("not logged in")
         }
+        ProviderKind::Zcode | ProviderKind::ZcodeFlash => unreachable!(),
     };
     if authenticated {
         let detail = if adapter.kind == ProviderKind::Claude {
@@ -724,6 +793,7 @@ fn explicitly_not_authenticated(provider: ProviderKind, lowered: &str) -> bool {
         ProviderKind::Cursor => {
             lowered.contains("not authenticated") || lowered.contains("not logged in")
         }
+        ProviderKind::Zcode | ProviderKind::ZcodeFlash => unreachable!(),
     }
 }
 
@@ -735,6 +805,7 @@ fn contains_api_auth(provider: ProviderKind, lowered: &str) -> bool {
         ProviderKind::Codex => lowered.contains("api key"),
         ProviderKind::Kimi => lowered.contains("api key") || lowered.contains("moonshot"),
         ProviderKind::Cursor => lowered.contains("api key") || lowered.contains("apikey"),
+        ProviderKind::Zcode | ProviderKind::ZcodeFlash => unreachable!(),
     }
 }
 
@@ -905,7 +976,9 @@ pub fn default_status_from_ledger(
     status.enabled = ledger.enabled && status.enabled;
     if !ledger.enabled {
         status.usage = crate::model::UsageState::Disabled;
-    } else if status.auth == AuthState::Subscription {
+    } else if status.auth == AuthState::Subscription
+        || (status.provider.is_zcode() && status.auth == AuthState::SubscriptionPending)
+    {
         status.usage = ledger.usage.clone();
         status.usage_source = ledger.usage_source.clone();
     }
@@ -931,28 +1004,177 @@ mod tests {
     use crate::model::AgentRole;
 
     #[cfg(unix)]
-    fn fake_version_binary(path: &Path, version: &str) {
+    fn fake_codex_binary(path: &Path, version: &str, help: &str, auth: &str) {
         use std::os::unix::fs::PermissionsExt;
 
-        std::fs::write(path, format!("#!/bin/sh\necho '{version}'\n")).unwrap();
+        std::fs::write(path, format!(
+            "#!/bin/sh\ncase \"$*\" in\n'--version') echo '{version}' ;;\n'exec --help') echo '{help}' ;;\n'login status') echo '{auth}' ;;\n*) echo 'unexpected model request' >&2; exit 99 ;;\nesac\n"
+        )).unwrap();
         let mut permissions = std::fs::metadata(path).unwrap().permissions();
         permissions.set_mode(0o755);
         std::fs::set_permissions(path, permissions).unwrap();
     }
 
     #[cfg(unix)]
-    #[test]
-    fn compatible_path_codex_wins_over_stale_bundled_binary() {
+    #[tokio::test]
+    async fn capable_path_codex_wins_over_newer_incompatible_bundle() {
         let temp = tempfile::tempdir().unwrap();
         let bundled = temp.path().join("bundled-codex");
         let path_binary = temp.path().join("path-codex");
-        fake_version_binary(&bundled, "codex-cli 0.144.0");
-        fake_version_binary(&path_binary, "codex-cli 0.149.0");
+        fake_codex_binary(
+            &bundled,
+            "codex-cli 99.0.0",
+            "--json",
+            "Logged in using ChatGPT",
+        );
+        fake_codex_binary(
+            &path_binary,
+            "codex-cli 0.1.0",
+            &CODEX_REQUIRED_FLAGS.join("\n"),
+            "Logged in using ChatGPT",
+        );
 
         assert_eq!(
-            choose_codex_binary(bundled, Some(path_binary.clone())),
+            choose_codex_binary(bundled, Some(path_binary.clone()), false).await,
             Some(path_binary)
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn capable_bundle_is_preferred_regardless_of_version() {
+        let temp = tempfile::tempdir().unwrap();
+        let bundled = temp.path().join("bundled-codex");
+        let path_binary = temp.path().join("path-codex");
+        for (binary, version) in [(&bundled, "custom build"), (&path_binary, "99.0.0")] {
+            fake_codex_binary(
+                binary,
+                version,
+                &CODEX_REQUIRED_FLAGS.join("\n"),
+                "Logged in using ChatGPT",
+            );
+        }
+        assert_eq!(
+            choose_codex_binary(bundled.clone(), Some(path_binary), false).await,
+            Some(bundled)
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn fast_mode_requires_enable_capability_without_changing_standard_discovery() {
+        let temp = tempfile::tempdir().unwrap();
+        let bundled = temp.path().join("bundled-codex");
+        let path_binary = temp.path().join("path-codex");
+        fake_codex_binary(
+            &bundled,
+            "custom build",
+            &CODEX_REQUIRED_FLAGS.join("\n"),
+            "Logged in using ChatGPT",
+        );
+        fake_codex_binary(
+            &path_binary,
+            "custom build",
+            &format!("{}\n--enable", CODEX_REQUIRED_FLAGS.join("\n")),
+            "Logged in using ChatGPT",
+        );
+        assert_eq!(
+            choose_codex_binary(bundled.clone(), Some(path_binary.clone()), false).await,
+            Some(bundled.clone())
+        );
+        assert_eq!(
+            choose_codex_binary(bundled.clone(), Some(path_binary), true).await,
+            Some(temp.path().join("path-codex"))
+        );
+
+        let mut config = Config::default().with_modes(false, true).unwrap();
+        config.providers.get_mut("codex").unwrap().binary = Some(bundled.clone());
+        let status = inspect(&config, ProviderKind::Codex).await;
+        assert_eq!(status.binary, Some(bundled));
+        assert_eq!(status.usage, crate::model::UsageState::Unavailable);
+        assert!(status.last_error.unwrap().contains("--enable"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn inspection_accepts_capabilities_without_a_semver_gate() {
+        let temp = tempfile::tempdir().unwrap();
+        let binary = temp.path().join("codex");
+        let mut config = Config::default();
+        config.providers.get_mut("codex").unwrap().binary = Some(binary.clone());
+        for version in [
+            "codex-cli 0.1.0",
+            "codex-cli 99.0.0-beta.1",
+            "custom build",
+            "",
+        ] {
+            fake_codex_binary(
+                &binary,
+                version,
+                &CODEX_REQUIRED_FLAGS.join("\n"),
+                "Logged in using ChatGPT",
+            );
+            let status = inspect(&config, ProviderKind::Codex).await;
+            assert_eq!(
+                status.auth,
+                AuthState::Subscription,
+                "{version}: {status:?}"
+            );
+            assert_eq!(status.usage, crate::model::UsageState::Unknown);
+        }
+        // A compatible interface never makes API billing acceptable.
+        fake_codex_binary(
+            &binary,
+            "custom build",
+            &CODEX_REQUIRED_FLAGS.join("\n"),
+            "Logged in using an API key",
+        );
+        assert_eq!(
+            inspect(&config, ProviderKind::Codex).await.auth,
+            AuthState::ApiKey
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn missing_capability_fails_closed_even_for_a_future_version() {
+        let temp = tempfile::tempdir().unwrap();
+        let binary = temp.path().join("codex");
+        let mut config = Config::default();
+        config.providers.get_mut("codex").unwrap().binary = Some(binary.clone());
+        let help = CODEX_REQUIRED_FLAGS
+            .join("\n")
+            .replace("--ignore-user-config", "--ignore-user-config-unsafe");
+        fake_codex_binary(
+            &binary,
+            "codex-cli 99.0.0",
+            &help,
+            "Logged in using ChatGPT",
+        );
+        let status = inspect(&config, ProviderKind::Codex).await;
+        assert_eq!(status.binary, Some(binary));
+        assert_eq!(status.usage, crate::model::UsageState::Unavailable);
+        assert_eq!(status.usage_source, "compatibility");
+        assert!(status.last_error.unwrap().contains("--ignore-user-config"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn failed_help_is_unavailable_without_starting_auth_or_inference() {
+        let temp = tempfile::tempdir().unwrap();
+        let binary = temp.path().join("codex");
+        fake_codex_binary(&binary, "99.0.0", "", "");
+        let unexpected = temp.path().join("unexpected-call");
+        std::fs::write(&binary, format!(
+            "#!/bin/sh\ncase \"$*\" in\n'--version') echo '99.0.0' ;;\n'exec --help') echo 'help unavailable' >&2; exit 1 ;;\n*) touch '{}'; exit 99 ;;\nesac\n",
+            unexpected.display()
+        )).unwrap();
+        let mut config = Config::default();
+        config.providers.get_mut("codex").unwrap().binary = Some(binary);
+        let status = inspect(&config, ProviderKind::Codex).await;
+        assert_eq!(status.usage, crate::model::UsageState::Unavailable);
+        assert!(status.last_error.unwrap().contains("help unavailable"));
+        assert!(!unexpected.exists());
     }
 
     #[test]
@@ -1013,6 +1235,8 @@ mod tests {
             version: None,
             model: Some("grok-4.7-fast".into()),
             reasoning_effort: None,
+            fast_mode: false,
+            ultracode: false,
         };
         let spec = adapter.command_spec(
             &context(&temp, AgentRole::Reviewer),
@@ -1057,6 +1281,8 @@ mod tests {
             version: None,
             model: Some("grok-4.7-fast".into()),
             reasoning_effort: None,
+            fast_mode: false,
+            ultracode: false,
         };
         let spec = adapter.command_spec(
             &context(&temp, AgentRole::Fixer),
@@ -1139,6 +1365,8 @@ mod tests {
             version: None,
             model: Some("gpt-6-astra".into()),
             reasoning_effort: Some("max".into()),
+            fast_mode: false,
+            ultracode: false,
         };
         let reviewer = adapter.command_spec(
             &context(&temp, AgentRole::Reviewer),
@@ -1200,6 +1428,103 @@ mod tests {
         );
     }
 
+    #[test]
+    fn ultra_codex_requests_ultra_reasoning_and_fast_not_ultrafast_for_every_role() {
+        let temp = tempfile::tempdir().unwrap();
+        let adapter = ProviderAdapter {
+            kind: ProviderKind::Codex,
+            binary: "codex".into(),
+            version: None,
+            model: Some("gpt-6-astra".into()),
+            reasoning_effort: Some("ultra".into()),
+            fast_mode: true,
+            ultracode: false,
+        };
+        for role in [AgentRole::Reviewer, AgentRole::Reducer, AgentRole::Fixer] {
+            let spec = adapter.command_spec(
+                &context(&temp, role),
+                Path::new("final"),
+                Path::new("profile"),
+            );
+            for pair in [
+                ["--model", "gpt-6-astra"],
+                ["--config", "model_reasoning_effort=ultra"],
+                ["--config", "service_tier=\"fast\""],
+                ["--enable", "fast_mode"],
+                ["--disable", "hooks"],
+                [
+                    "--sandbox",
+                    if matches!(role, AgentRole::Fixer) {
+                        "workspace-write"
+                    } else {
+                        "read-only"
+                    },
+                ],
+            ] {
+                assert!(
+                    spec.args.windows(2).any(|values| values == pair),
+                    "{pair:?}: {:?}",
+                    spec.args
+                );
+            }
+            assert!(!spec.args.iter().any(|arg| arg.contains("ultrafast")));
+            assert!(
+                !spec
+                    .args
+                    .windows(2)
+                    .any(|values| values == ["--disable", "fast_mode"])
+            );
+            assert!(spec.remove_env.contains(&"OPENAI_API_KEY".into()));
+        }
+    }
+
+    #[tokio::test]
+    async fn streaming_retry_does_not_reuse_a_stale_final_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let script = temp.path().join("fake-codex");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\necho '{\"type\":\"result\",\"result\":\"{\\\"findings\\\":[]}\"}'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let provider_dir = temp.path().join("run/providers/codex");
+        std::fs::create_dir_all(&provider_dir).unwrap();
+        let final_path = provider_dir.join("reducer.final.txt");
+        std::fs::write(&final_path, "stale earlier attempt").unwrap();
+        let adapter = ProviderAdapter {
+            kind: ProviderKind::Codex,
+            binary: script,
+            version: None,
+            model: None,
+            reasoning_effort: None,
+            fast_mode: false,
+            ultracode: false,
+        };
+        let output = adapter
+            .run(&context(&temp, AgentRole::Reducer))
+            .await
+            .unwrap();
+        assert_eq!(output.text, "{\"findings\":[]}");
+        assert!(!final_path.exists());
+        let archives: Vec<_> = std::fs::read_dir(&provider_dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("reducer.final.txt.attempt-")
+            })
+            .collect();
+        assert_eq!(archives.len(), 1);
+        assert_eq!(
+            std::fs::read_to_string(&archives[0]).unwrap(),
+            "stale earlier attempt"
+        );
+    }
+
     #[tokio::test]
     async fn cursor_stream_requires_browser_login() {
         use std::os::unix::fs::PermissionsExt;
@@ -1215,6 +1540,8 @@ mod tests {
             version: None,
             model: Some("grok-4.7-fast".into()),
             reasoning_effort: None,
+            fast_mode: false,
+            ultracode: false,
         };
         let output = adapter
             .run(&context(&temp, AgentRole::Reviewer))
@@ -1225,12 +1552,14 @@ mod tests {
     }
 
     #[test]
-    fn codex_version_gate_accepts_current_and_rejects_legacy_cli() {
-        assert!(codex_cli_is_compatible("codex-cli 0.145.0"));
-        assert!(codex_cli_is_compatible("codex-cli 0.159.2"));
-        assert!(codex_cli_is_compatible("codex-cli 0.148.0-alpha.15"));
-        assert!(!codex_cli_is_compatible("codex-cli 0.142.3"));
-        assert!(!codex_cli_is_compatible("codex-cli fake"));
+    fn codex_capability_check_requires_exact_flag_names() {
+        let help = CODEX_REQUIRED_FLAGS.join("\n");
+        assert!(missing_codex_flags(&help, false).is_empty());
+        for flag in CODEX_REQUIRED_FLAGS {
+            let incomplete = help.replace(flag, &format!("{flag}-other"));
+            assert!(missing_codex_flags(&incomplete, false).contains(flag));
+        }
+        assert_eq!(missing_codex_flags("", false), CODEX_REQUIRED_FLAGS);
     }
 
     #[test]

@@ -29,17 +29,33 @@ fn git(repo: &Path, args: &[&str]) -> String {
 
 #[test]
 fn four_provider_review_reduce_and_fix_leave_source_untouched() {
-    four_provider_pipeline(false);
+    four_provider_pipeline("default", true);
 }
 
 #[test]
 fn easy_mode_survives_detach_resume_reduce_fix_and_dry_run() {
-    four_provider_pipeline(true);
+    four_provider_pipeline("easy", true);
 }
 
-fn four_provider_pipeline(easy_mode: bool) {
-    let mode_args: &[&str] = if easy_mode { &["--easy-mode"] } else { &[] };
-    let claude_model = if easy_mode {
+#[test]
+fn ultra_mode_survives_detach_resume_reduce_fix_and_dry_run() {
+    four_provider_pipeline("ultra", true);
+}
+
+#[test]
+fn ultra_without_claude_workflow_evidence_degrades_instead_of_accepting_fallback() {
+    four_provider_pipeline("ultra", false);
+}
+
+fn four_provider_pipeline(mode: &str, attest_claude: bool) {
+    let easy_mode = mode == "easy";
+    let ultra_mode = mode == "ultra";
+    let mode_args: &[&str] = match mode {
+        "easy" => &["--easy-mode"],
+        "ultra" => &["--ultra-mode"],
+        _ => &[],
+    };
+    let claude_model = if easy_mode || ultra_mode {
         "claude-opus-5-5"
     } else {
         "claude-fable-5-1"
@@ -49,12 +65,16 @@ fn four_provider_pipeline(easy_mode: bool) {
     } else {
         "gpt-6-astra"
     };
+    let codex_effort = if ultra_mode { "ultra" } else { "max" };
+    let fast_flag = if ultra_mode { "--enable" } else { "--disable" };
+    let service_tier = if ultra_mode { "fast" } else { "default" };
     let temp = tempfile::tempdir().unwrap();
     let repo = temp.path().join("repo");
     let bin = temp.path().join("bin");
     let config = temp.path().join("config");
     let data = temp.path().join("data");
     let kimi_home = temp.path().join("kimi-home");
+    let claude_home = temp.path().join("claude-home");
     fs::create_dir_all(kimi_home.join("credentials")).unwrap();
     // Discovery checks file presence only; fake providers never use real credentials.
     fs::write(kimi_home.join("credentials/kimi.json"), "{}").unwrap();
@@ -93,11 +113,70 @@ if [ "$1" = "auth" ]; then echo '{{"loggedIn":true,"subscriptionType":"max","aut
 {guard_checks}
 all="$*"
 case " $all " in *" --model {claude_model} "*) ;; *) echo 'Claude model did not match the run preset' >&2; exit 95 ;; esac
-settings=''
-while [ $# -gt 0 ]; do if [ "$1" = "--settings" ]; then settings="$2"; shift 2; else shift; fi; done
-out="$(dirname "$settings")/reviewer.hook.json"
-printf '%s' '{{"last_assistant_message":"{{\"findings\":[]}}"}}' > "$out"
-echo 'backgrounded · deadbeef'
+settings=''; agents=''; sources='unset'; effort=''; tools=''
+# Like Claude --background, the fake daemon owns its conversation UUID.
+session="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --settings) settings="$2"; shift 2 ;;
+    --agents) agents="$2"; shift 2 ;;
+    --setting-sources) sources="$2"; shift 2 ;;
+    --session-id) echo 'Background mode ignores caller-supplied session IDs' >&2; exit 103 ;;
+    --effort) effort="$2"; shift 2 ;;
+    --tools) tools="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[ "$sources" = "" ] || {{ echo 'Claude inherited settings sources' >&2; exit 96; }}
+python3 - "$agents" "$settings" "$session" "$effort" "$tools" <<'PY'
+import json,os,shlex,subprocess,sys
+from pathlib import Path
+agents,settings,session,effort,tools=sys.argv[1:]
+root=Path(os.environ["CLAUDE_CONFIG_DIR"])
+trust=json.loads((root/".claude.json").read_text())
+assert trust["projects"][str(Path.cwd().resolve())]["hasTrustDialogAccepted"] is True
+a=json.loads(agents)
+s=json.loads(Path(settings).read_text())
+ultra="{ultra_mode}" == "true"
+expected=["Read","Glob","Grep"] + (["Workflow"] if ultra else [])
+assert a["triad-reviewer"]["tools"] == expected
+hook={{"last_assistant_message":json.dumps({{"findings":[]}})}}
+if ultra:
+    assert effort == "ultracode"
+    assert s["ultracode"] is True and s["enableWorkflows"] is True and s["fastMode"] is False
+    assert "Workflow" in tools and "Bash" not in tools
+    assert "Workflow" in s["permissions"]["allow"]
+    for denied in ["Edit","Write","Bash","NotebookEdit","Agent","WebFetch","WebSearch"]:
+        assert denied in s["permissions"]["deny"], denied
+    transcript=root/"projects"/"fake-ultra"/(session+".jsonl")
+    transcript.parent.mkdir(parents=True,exist_ok=True)
+    events=[
+        {{"type":"user","isMeta":True,"sessionId":session,"message":{{"role":"user","content":"<system-reminder>Ultracode is on: use workflows</system-reminder>"}}}},
+        {{"type":"assistant","sessionId":session,"message":{{"role":"assistant","content":[{{"type":"tool_use","id":"workflow-1","name":"Workflow","input":{{"script":"await agent('read-only code check')"}}}}]}}}},
+        {{"type":"user","sessionId":session,"message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"workflow-1","content":"Workflow launched in background. Task ID: workflow-1","is_error":False}}]}}}},
+    ]
+    transcript.write_text("\n".join(json.dumps(event) for event in events)+"\n")
+    hook.update(session_id=session,transcript_path=str(transcript),background_tasks=[])
+    if "{attest_claude}" == "false":
+        transcript.write_text("")
+else:
+    assert effort == ""
+    assert not s.get("ultracode",False)
+command=shlex.split(s["hooks"]["Stop"][0]["hooks"][0]["command"])
+output=Path(command[command.index("--output")+1])
+if ultra and "{attest_claude}" == "true":
+    pending=dict(hook)
+    pending.update(background_tasks=[{{"task_id":"workflow-1","status":"running"}}],last_assistant_message="Waiting for workflow checks")
+    output.write_text(json.dumps(pending))
+    # A real background session fires an interim Stop before the workflow's
+    # final Stop; leave stdio detached so the launcher can exit immediately.
+    finish='import os,sys,time; from pathlib import Path; time.sleep(1); p=Path(sys.argv[1]); t=p.with_suffix(".pending"); t.write_text(sys.argv[2]); os.replace(t,p)'
+    subprocess.Popen([sys.executable,"-c",finish,str(output),json.dumps(hook)],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True)
+else:
+    output.write_text(json.dumps(hook))
+PY
+[ $? -eq 0 ] || exit 97
+echo "backgrounded · ${{session%%-*}}"
 "#
         ),
     );
@@ -106,17 +185,36 @@ echo 'backgrounded · deadbeef'
         &format!(
             r#"#!/bin/sh
 {deny_keys}
-if [ "$1" = "--version" ]; then echo 'codex-cli 0.148.0'; exit 0; fi
+if [ "$1" = "--version" ]; then echo 'codex-cli 0.1.0'; exit 0; fi
+if [ "$1 $2" = "exec --help" ]; then echo '--json --ignore-user-config --strict-config --disable --enable --config --output-schema --output-last-message --sandbox --ignore-rules --cd --model'; exit 0; fi
 if [ "$1" = "login" ]; then echo 'Logged in using ChatGPT'; exit 0; fi
 {guard_checks}
 all="$*"; final=''
 case " $all " in *" --model {codex_model} "*) ;; *) echo 'Codex model did not match the run preset' >&2; exit 95 ;; esac
-case " $all " in *" --config model_reasoning_effort=max "*) ;; *) echo 'Codex reasoning was not set to max' >&2; exit 96 ;; esac
+case " $all " in *" --config model_reasoning_effort={codex_effort} "*) ;; *) echo 'Codex reasoning did not match the run preset' >&2; exit 96 ;; esac
 case " $all " in *" --ignore-user-config "*) ;; *) echo 'Codex inherited unsafe user config' >&2; exit 97 ;; esac
 case " $all " in *" --disable hooks "*) ;; *) echo 'Codex hooks were not disabled' >&2; exit 98 ;; esac
-case " $all " in *" --disable fast_mode "*) ;; *) echo 'Codex Fast mode was not disabled' >&2; exit 99 ;; esac
-case " $all " in *' --config service_tier="default" '*) ;; *) echo 'Codex service tier was not pinned to Standard' >&2; exit 100 ;; esac
+case " $all " in *" {fast_flag} fast_mode "*) ;; *) echo 'Codex Fast feature did not match the run preset' >&2; exit 99 ;; esac
+case " $all " in *' --config service_tier="{service_tier}" '*) ;; *) echo 'Codex service tier did not match the run preset' >&2; exit 100 ;; esac
 while [ $# -gt 0 ]; do if [ "$1" = "--output-last-message" ]; then final="$2"; shift 2; else shift; fi; done
+case "$all" in
+  *"Triad reducer"*|*"Triad fixer"*) ;;
+  *)
+    python3 - "$final" <<'PY'
+import json,sys,time
+from pathlib import Path
+manifest = Path(sys.argv[1]).parents[2] / "manifest.json"
+deadline = time.monotonic() + 3
+while time.monotonic() < deadline:
+    records = json.loads(manifest.read_text())["providers"]
+    if any(p["provider"] == "kimi" and (not p["selected"] or p["status"] == "completed") for p in records):
+        break
+    time.sleep(.02)
+else:
+    sys.exit("provider completion was hidden until all reviewers finished")
+PY
+    [ $? -eq 0 ] || exit 102 ;;
+esac
 case "$all" in
   *"Triad reducer"*) result='{{"findings":[{{"id":"TRIAD-001","verdict":"accepted","title":"Concrete bug","severity":"high","file":"file.txt","line":2,"rationale":"verified","evidence":"bug line","trigger":"read file","impact":"failure","suggested_fix":"replace bug","sources":["codex"]}}]}}' ;;
   *"Triad fixer"*) printf 'fixed\n' >> file.txt; result='{{"summary":"fixed","tests":[{{"command":"true","status":"passed"}}]}}' ;;
@@ -193,6 +291,11 @@ binary = "{}"
 enabled = true
 binary = "{}"
 model = "grok-4.7-fast"
+
+[providers.zcode]
+enabled = false
+[providers.zcode_flash]
+enabled = false
 "#,
         bin.join("claude").display(),
         bin.join("codex").display(),
@@ -205,6 +308,7 @@ model = "grok-4.7-fast"
     let output = review
         .current_dir(&repo)
         .env("KIMI_CODE_HOME", &kimi_home)
+        .env("CLAUDE_CONFIG_DIR", &claude_home)
         .env("TRIAD_CONFIG_HOME", &config)
         .env("TRIAD_DATA_HOME", &data)
         .env("ANTHROPIC_API_KEY", "must-not-leak")
@@ -254,13 +358,26 @@ model = "grok-4.7-fast"
     let mut manifest: serde_json::Value =
         serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
     assert_eq!(manifest["easy_mode"], easy_mode);
-    assert_eq!(manifest["degraded"], false, "{manifest}");
+    assert_eq!(manifest["ultra_mode"], ultra_mode);
+    // This legacy four-provider fixture deliberately disables both GLM slots.
+    assert_eq!(manifest["degraded"], true, "{manifest}");
     assert!(
         manifest["providers"]
             .as_array()
             .unwrap()
             .iter()
-            .all(|provider| { provider["selected"] == true && provider["status"] == "completed" }),
+            .all(|provider| {
+                if matches!(provider["provider"].as_str(), Some("zcode" | "zcode_flash")) {
+                    return provider["selected"] == false;
+                }
+                provider["selected"] == true
+                    && provider["status"]
+                        == if provider["provider"] == "claude" && !attest_claude {
+                            "failed"
+                        } else {
+                            "completed"
+                        }
+            }),
         "{manifest}"
     );
     for (provider, model) in [("claude", claude_model), ("codex", codex_model)] {
@@ -271,8 +388,17 @@ model = "grok-4.7-fast"
             .find(|entry| entry["provider"] == provider)
             .unwrap();
         assert_eq!(record["model"], model);
+        if provider == "claude" && !attest_claude {
+            assert!(
+                record["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("Ultra unavailable or unverified"),
+                "{record}"
+            );
+        }
     }
-    if easy_mode {
+    if easy_mode || ultra_mode {
         // Simulate a stopped worker, then replay its saved request without a new mode flag.
         manifest["state"] = "failed".into();
         fs::write(
@@ -287,12 +413,14 @@ model = "grok-4.7-fast"
             .env("TRIAD_DATA_HOME", &data)
             .args(["resume", &run_id])
             .env("KIMI_CODE_HOME", &kimi_home)
+            .env("CLAUDE_CONFIG_DIR", &claude_home)
             .assert()
-            .success();
+            .code(2);
         manifest = serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
-        assert_eq!(manifest["easy_mode"], true);
+        assert_eq!(manifest["easy_mode"], easy_mode);
+        assert_eq!(manifest["ultra_mode"], ultra_mode);
         assert_eq!(manifest["state"], "awaiting_approval");
-        assert_eq!(manifest["degraded"], false, "{manifest}");
+        assert_eq!(manifest["degraded"], true, "{manifest}");
     }
     manifest["error"] = serde_json::Value::String("stale retry error".into());
     fs::write(
@@ -324,6 +452,7 @@ model = "grok-4.7-fast"
     assert_eq!(manifest["state"], "completed");
     assert_eq!(manifest["error"], serde_json::Value::Null);
     assert_eq!(manifest["easy_mode"], easy_mode);
+    assert_eq!(manifest["ultra_mode"], ultra_mode);
     assert_eq!(
         fs::read_to_string(config.join("config.toml")).unwrap(),
         config_body
@@ -374,6 +503,7 @@ model = "grok-4.7-fast"
     assert_eq!(manifest["state"], "completed");
     assert_eq!(manifest["dry_run"], true);
     assert_eq!(manifest["easy_mode"], easy_mode);
+    assert_eq!(manifest["ultra_mode"], ultra_mode);
     assert!(!dry_run_dir.join("fix.patch").exists());
 }
 
@@ -400,7 +530,8 @@ fn reviewer_file_mutation_is_discarded_as_protocol_violation() {
     executable(
         &bin.join("codex"),
         r#"#!/bin/sh
-if [ "$1" = "--version" ]; then echo 'codex-cli 0.148.0'; exit 0; fi
+if [ "$1" = "--version" ]; then echo 'codex-cli custom-build'; exit 0; fi
+if [ "$1 $2" = "exec --help" ]; then echo '--json --ignore-user-config --strict-config --disable --config --output-schema --output-last-message --sandbox --ignore-rules --cd --model'; exit 0; fi
 if [ "$1" = "login" ]; then echo 'Logged in using ChatGPT'; exit 0; fi
 printf 'agent mutation\n' >> file.txt
 final=''
@@ -525,7 +656,8 @@ mod tests {
     executable(
         &bin.join("codex"),
         r#"#!/bin/sh
-if [ "$1" = "--version" ]; then echo 'codex-cli 0.148.0'; exit 0; fi
+if [ "$1" = "--version" ]; then echo 'codex-cli custom-build'; exit 0; fi
+if [ "$1 $2" = "exec --help" ]; then echo '--json --ignore-user-config --strict-config --disable --config --output-schema --output-last-message --sandbox --ignore-rules --cd --model'; exit 0; fi
 if [ "$1" = "login" ]; then echo 'Logged in using ChatGPT'; exit 0; fi
 final=''
 while [ $# -gt 0 ]; do if [ "$1" = "--output-last-message" ]; then final="$2"; shift 2; else shift; fi; done

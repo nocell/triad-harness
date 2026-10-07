@@ -29,8 +29,11 @@ pub enum Command {
 #[derive(Debug, Args)]
 pub struct ProvidersArgs {
     /// Inspect the Opus 5.5 / GPT-6.1 Sol preset without changing saved configuration.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "ultra_mode")]
     pub easy_mode: bool,
+    /// Inspect Opus 5.5 Ultracode / GPT-6 Astra Ultra with Fast processing.
+    #[arg(long, conflicts_with = "easy_mode")]
+    pub ultra_mode: bool,
     #[arg(long)]
     pub json: bool,
     #[arg(long)]
@@ -40,8 +43,11 @@ pub struct ProvidersArgs {
 #[derive(Debug, Args)]
 pub struct DoctorArgs {
     /// Inspect the Opus 5.5 / GPT-6.1 Sol preset without changing saved configuration.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "ultra_mode")]
     pub easy_mode: bool,
+    /// Inspect Opus 5.5 Ultracode / GPT-6 Astra Ultra with Fast processing.
+    #[arg(long, conflicts_with = "easy_mode")]
+    pub ultra_mode: bool,
     #[arg(long)]
     pub refresh: bool,
     #[arg(long)]
@@ -76,9 +82,13 @@ pub enum ProviderCommand {
 pub struct ReviewArgs {
     pub target: Option<String>,
     /// Use Claude Opus 5.5 and Codex GPT-6.1 Sol for this run, including reduce and fix.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "ultra_mode")]
     #[serde(default)]
     pub easy_mode: bool,
+    /// Use Opus 5.5 Ultracode and GPT-6 Astra Ultra with Fast processing for this run.
+    #[arg(long, conflicts_with = "easy_mode")]
+    #[serde(default)]
+    pub ultra_mode: bool,
     #[arg(long, conflicts_with_all = ["commit", "uncommitted"])]
     pub base: Option<String>,
     #[arg(long, conflicts_with_all = ["base", "uncommitted"])]
@@ -124,6 +134,8 @@ pub struct ResumeArgs {
     pub run_id: String,
     #[arg(long)]
     pub detach: bool,
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Debug, Args)]
@@ -160,8 +172,11 @@ pub struct InstallSkillArgs {
     #[arg(long, value_enum)]
     pub host: SkillHost,
     /// Install the separate triad-easy skill, leaving triad unchanged.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "ultra_mode")]
     pub easy_mode: bool,
+    /// Install the separate triad-ultra skill, leaving other skills unchanged.
+    #[arg(long, conflicts_with = "easy_mode")]
+    pub ultra_mode: bool,
     #[arg(long)]
     pub yes: bool,
 }

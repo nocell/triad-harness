@@ -8,7 +8,7 @@ Install Triad and its skills for all supported agents by following these instruc
 
 Triad is a local Rust CLI that reviews one Git change with every available subscription-backed coding agent, consolidates the findings, and prepares a patch only after a separate approval command.
 
-Triad is an independent project and is not affiliated with Anthropic, OpenAI, Moonshot AI, Cursor, or xAI.
+Triad is an independent project and is not affiliated with Anthropic, OpenAI, Moonshot AI, Cursor, xAI, or Z.ai.
 
 ## The idea: MapReduce for frontier-model intelligence
 
@@ -24,23 +24,29 @@ flowchart TB
         O["Codex<br/>Correctness and concurrency"]
         K["Kimi Code<br/>Regressions and API contracts"]
         G["Cursor / Grok<br/>Adversarial and cross-file analysis"]
+        Z["ZCode / GLM-5.3<br/>Cross-file contracts and state"]
+        ZF["ZCode / GLM-5.3-Flash<br/>Edge cases and simple regressions"]
     end
 
     Q --> C
     Q --> O
     Q --> K
     Q --> G
+    Q --> Z
+    Q --> ZF
     C --> F["Structured findings + evidence"]
     O --> F
     K --> F
     G --> F
+    Z --> F
+    ZF --> F
     F --> R["REDUCE — Leader independently checks the code<br/>Deduplicates and validates each claim"]
     R --> REPORT["One report<br/>Accepted · Needs human · Rejected"]
     REPORT --> APPROVE["Explicit user approval: triad fix"]
     APPROVE --> FIX["Isolated patch + test results"]
 ```
 
-**Map:** Up to four reviewers, one per runnable provider, inspect the same full change in separate disposable snapshots. Different review focuses encourage complementary findings. If one provider runs out of quota, the others can continue and the report records reduced coverage.
+**Map:** Up to six reviewers across five vendor subscriptions inspect the same full change in separate disposable snapshots. The two ZCode providers run GLM-5.3 and GLM-5.3-Flash in parallel through the same Z.ai Coding Plan subscription. Different review focuses encourage complementary findings. If one provider runs out of quota, the others can continue and the report records reduced coverage.
 
 **Reduce:** A configurable leader reads the findings and independently checks their evidence, reachable triggers, and impact against the code. Agreement between models is context, not proof; claims become `accepted`, `needs-human`, or `rejected` after verification.
 
@@ -50,7 +56,7 @@ flowchart TB
 
 Large or risky changes are a poor fit for a single AI reviewer: one model can miss a cross-file regression, hallucinate a problem, or push its preferred architecture. Running several coding CLIs manually produces disconnected reports and repeated coordination work. Triad turns the subscription-backed agents you already use into one controlled review pipeline.
 
-- **Broader coverage without API billing.** Triad discovers authenticated Claude Code, Codex, Kimi Code, and Cursor Agent subscriptions and fans review out to every provider whose observed quota state is runnable.
+- **Broader coverage without API billing.** Triad discovers authenticated Claude Code, Codex, Kimi Code, Cursor Agent, and native ZCode subscriptions and fans review out to every provider whose observed quota state is runnable.
 - **Independent perspectives, one verified report.** Every reviewer sees the same exact Git snapshot with a different focus. A separate leader reopens the code, verifies reachability and impact, deduplicates overlap, and classifies each claim instead of relying on majority voting.
 - **High signal over architectural taste.** Findings must include a location, evidence, trigger, impact, and suggested fix. The reducer rejects speculative cleanup and overengineering when the change can safely ship as written.
 - **Safe failure boundaries.** Reviewers run in disposable clones without a push remote, receive no vendor API-key environment variables, and are discarded if they mutate their snapshot. A provider quota or protocol failure degrades coverage without cancelling successful reviewers.
@@ -60,15 +66,24 @@ Large or risky changes are a poor fit for a single AI reviewer: one model can mi
 Supported providers:
 
 - Claude Code through an interactive `claude --bg` subscription session, pinned to `claude-fable-5-1` — never `claude -p` or Agent SDK usage.
-- Codex CLI through ChatGPT login, pinned to `gpt-6-astra` with `max` reasoning and Standard processing; Fast mode is explicitly disabled.
+- Codex CLI through ChatGPT login, pinned to `gpt-6-astra` with `max` reasoning and Standard processing by default; Ultra opts into `ultra` reasoning and Fast.
 - Kimi Code through membership login, pinned to `kimi-code/k3`.
 - Cursor Agent through browser login, pinned to `grok-4.7-fast` (resolved to the current CLI model ID `grok-4.7-high-fast`).
+- ZCode through native Z.ai Coding Plan login, with separate `zcode` (`GLM-5.3`) and `zcode_flash` (`GLM-5.3-Flash`) reviewers. Both remain parallel reviewers in Default, Easy, and Ultra presets, subject to the same availability and explicit provider-selection rules.
+
+ZCode integration targets the official CLI bundled with the desktop application; the macOS discovery candidate is `/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs`. It requires native Z.ai Coding Plan authentication, not an API-key compatibility endpoint. Triad does not install ZCode or start login automatically. Discovery and fake-CLI tests do not establish live account authentication, model access, or inference success. The official fast model name is `GLM-5.3-Flash`; Instant is not a separately verified model, and Triad does not substitute FlashX.
+
+ZCode runs with a restricted native account/model catalog, isolated session storage, plugins and MCP disabled, and shell/write/delegation tools denied. Unsafe inherited user hooks or settings requiring migration make it unavailable; Triad does not rewrite your global settings. The native home is retained because ZCode encrypts its own credentials using it. Read tools are not an OS-enforced filesystem sandbox: snapshot-only reads are an instruction boundary. ZCode currently supports review and reduction, not the separately approved fixer; automatic fixes choose another provider, and a pinned ZCode fixer fails closed. If the standalone CLI needs its own login, explicitly run `triad provider login zcode` once; both GLM reviewers share that native account.
+
+The bundled CLI has no non-inference authentication-status command. ZCode therefore reports `subscription_pending`: Triad has locally validated the enforced Coding Plan-only route, not a valid login. Only these two adapters may defer authentication to the actual review task. A successful native account/model event confirms the manifest's auth source; failed login never falls back to API billing. `providers` and `doctor` do not submit `/model list` or another prompt as a probe.
 
 Triad never reads vendor OAuth tokens and removes known API-key variables from every child process. Reviewers operate in independent disposable Git clones; the source checkout is not modified.
 
 Cursor reviewers trust only the already-created disposable snapshot, run in read-only Ask mode with sandboxing enabled, and receive project-local deny rules for writes, secrets, destructive commands, network tools, and external CLIs. Global MCP servers are disabled for the run's snapshot and repository MCP configurations are replaced with empty run-local configs. The separately approved fixer allows writes only inside its disposable snapshot. Triad never passes Cursor `--force`, `-f`, or `--yolo`.
 
-On macOS, Triad prefers the current official Codex binary bundled with ChatGPT over an older global `codex`; an explicit `[providers.codex].binary` still wins. Codex runs with `--ignore-user-config`, user hooks and Fast mode disabled, `service_tier="default"`, the explicit model/effort pair, ChatGPT subscription auth, and a role-appropriate sandbox. It never silently falls back to an older model. Triad requires CLI version `0.145.0` or later; model availability is determined by the provider.
+Triad does not enforce agent CLI version numbers. Versions are recorded for diagnostics, not used as compatibility gates. For Codex, discovery checks `exec --help` for the options the adapter actually needs (including config isolation, sandboxing and structured output); this does not make a model request or consume subscription quota. An older, prerelease or custom-versioned binary can work if it supports that interface. A missing option or failed capability check makes the provider unavailable with a diagnostic; Triad never drops safety flags to bypass incompatibility. Model availability and vendor-imposed minimum versions are still determined by the provider on real requests, without silent model fallback.
+
+On macOS, Triad prefers the official Codex binary bundled with ChatGPT when it supports the required capabilities, otherwise it tries the global `codex`; an explicit `[providers.codex].binary` still wins and is checked without fallback. Codex runs with `--ignore-user-config`, user hooks disabled, the explicit model/effort pair, ChatGPT subscription auth, and a role-appropriate sandbox. Default/Easy use Standard (`service_tier="default"`, Fast disabled); Ultra explicitly enables Fast (`service_tier="fast"`).
 
 Reviewers are strictly passive. Their prompts forbid editing or deleting files, commits, pushes, branches, tags, GitHub comments/reviews/issues, messages, deployments, and all other external actions. They may only inspect code, propose findings, and run existing local unit tests or read-only checks inside their disposable snapshots. Triad also removes each snapshot's Git remote, isolates Git/GitHub credentials, and discards any result whose snapshot files or HEAD changed.
 
@@ -121,7 +136,7 @@ Release archives and native packages contain statically linked musl binaries for
 
 ### Docker (x86_64 and ARM64)
 
-The image pins Codex CLI to `0.159.2` and checks the installed version during each architecture's build. Native installs use the discovered local CLI; `triad providers` reports its path and version.
+The image defaults to Codex CLI `0.159.2` and checks the requested version during each architecture's build. This is a build default, not a runtime compatibility requirement; override `CODEX_CLI_VERSION` (or `CLAUDE_CODE_VERSION` / `KIMI_CODE_VERSION`) as a Docker build argument when needed. Native installs use the discovered local CLI; `triad providers` reports its path and version.
 
 The GHCR image contains Triad plus Claude Code, Codex CLI, Kimi Code CLI, Cursor Agent, Node.js, Python, and Rust. `edge` tracks `main`; version tags and `latest` are published from a release tag as one multi-platform manifest for `linux/amd64` and `linux/arm64`.
 
@@ -168,7 +183,7 @@ triad doctor --easy-mode --refresh
 
 `--easy-mode` pins Claude to **Opus 5.5** (`claude-opus-5-5`) and Codex to
 **GPT-6.1 Sol** (`gpt-6.1-sol`) for the run. It overrides those two configured
-model IDs without changing your saved configuration. Kimi, Cursor, provider
+model IDs without changing your saved configuration. Kimi, Cursor, both ZCode reviewers, provider
 selection, reasoning effort (Codex defaults to `max`), and Standard processing
 (Fast mode off) are unchanged. Without this flag, the existing Fable 5.1 / Astra
 defaults and your configured model overrides still apply.
@@ -180,6 +195,45 @@ silently fall back to another model or API billing.
 
 Model IDs: [Claude models](https://platform.claude.com/docs/en/models/overview),
 [GPT-6.1 Sol](https://developers.openai.com/api/docs/models/gpt-6.1-sol).
+
+### Ultra mode
+
+```bash
+triad review --base origin/main --ultra-mode --detach
+triad providers --ultra-mode --json
+triad doctor --ultra-mode --refresh
+```
+
+`--ultra-mode` is an opt-in run-local preset, mutually exclusive with `--easy-mode`:
+
+| Provider | Ultra configuration |
+| --- | --- |
+| Claude | Opus 5.5 (`claude-opus-5-5`), Ultracode workflows, `xhigh` effort; Claude Fast stays off |
+| Codex | GPT-6 Astra (`gpt-6-astra`), reasoning `ultra`, ordinary Fast (`service_tier="fast"`) — not Ultrafast |
+| Kimi / Cursor / ZCode / ZCode Flash | Unchanged; both GLM models remain parallel reviewers |
+
+Saved configuration, provider selection and the separate fix approval gate are unchanged.
+The preset survives detach, resume, reduction and fix, and also applies to `--dry-run`
+(which still makes model calls). Codex capability checks require `--enable` only when
+Fast is requested; no agent version is pinned and no inference probe is made.
+
+Claude runs a background subscription session with run-local Ultracode/workflow settings.
+Reviewers and reducers may orchestrate read-only checks using inline `Workflow` scripts;
+their child agents inherit deny rules for writes, shell commands and external actions.
+Triad requires a session-specific Ultracode-on reminder and a successful Workflow launch
+in the session transcript before accepting Claude's output. Missing/unsupported Ultracode
+is reported as a provider failure with degraded coverage, never as a silent ordinary-Opus
+fallback. `--require-all` requires every selected provider to pass discovery; a runtime
+provider failure still degrades coverage without discarding other reviewers. This activation
+check is not independent proof that every workflow child completed successfully.
+Account/policy support
+can only be established during a real task, not from `doctor` authentication checks.
+
+This mode uses subscription quota faster. Codex Fast consumes included limits at **2.5×**
+Standard; Claude workflow subagents also consume the subscription quota. Availability
+depends on the provider plan and policy. Keep account extra usage disabled; Triad never
+enables overage or API billing. See [Codex speed modes](https://learn.chatgpt.com/docs/agent-configuration/speed)
+and [Claude workflows](https://code.claude.com/docs/en/workflows).
 
 ```bash
 # Current branch against the remote default branch
@@ -202,6 +256,36 @@ triad report <run-id>
 
 `--providers auto` launches one reviewer for every runnable provider. Use `--require-all` to fail before model calls if any requested provider is unavailable. A quota failure produces a degraded report and updates the local circuit breaker.
 
+Claude background sessions require workspace trust. Triad records trust for each
+exact disposable clone in Claude's local project state, without trusting the source
+checkout or parent directories. It preserves the rest of the Claude configuration
+under the same file lock Claude uses. Sessions load only Triad's explicit settings
+and agent definition; repository and user settings are not inherited. Reviewer
+status and quota failures are saved as each provider finishes, while other reviewers
+continue.
+
+Every provider receives the same explicit JSON output contract. Triad validates
+reviewer, reducer and fixer responses locally: a missing `findings` field or an
+invalid verdict is an error, never a clean review. Failed reduction produces an
+explicit incomplete report, exits with code `3`, and cannot enter the fix stage.
+
+After Map finishes, `triad resume <run-id> --json` retries reduction using saved
+reviewer results and the original base/head and provider cohort, without repeating successful model
+calls or switching to the latest PR revision. Start a new review to review a new
+revision. If Map itself was interrupted before the checkpoint, resume still
+restarts Map. Historical reports are not rewritten automatically.
+
+During provider calls, the worker refreshes its heartbeat every ten seconds.
+`review --detach --json` and `resume --detach --json` return a JSON object with
+`run_id` and `pid`; without `--json`, detached commands print the run ID.
+Provider logs retain full secret-redacted output, while diagnostics remain bounded.
+
+Repeated quota errors without a reported reset use an observed exponential
+cooldown (15, 30, 60 minutes, up to six hours with the default configuration).
+This is a retry policy, not an estimate of remaining quota or the reset time.
+An exact provider-reported reset wins; success or manual provider enable resets
+the backoff. No model probes are used.
+
 ### CI dry run
 
 ```bash
@@ -221,6 +305,11 @@ triad fix <run-id> --only TRIAD-001,TRIAD-004
 ```
 
 The fixer works in a fresh disposable checkout and writes `fix.patch` and `tests.json` into the run directory. It does not commit, push, or apply the patch to the source checkout.
+
+If the fixer reports a failed test or a malformed test report, the run ends as
+`fix_incomplete` (exit `3`) and preserves its patch for inspection. A patch alone
+does not prove verification. Tests recorded as `not_run` remain visible in
+`tests.json`; Triad does not independently certify an agent's test claims.
 
 ## Provider and run management
 
@@ -248,11 +337,16 @@ triad install-skill --host all --yes
 
 # Optional second skill, alongside the normal one:
 triad install-skill --host all --easy-mode --yes
+
+# Optional Ultra skill, without replacing the other two:
+triad install-skill --host codex --ultra-mode --yes
 ```
 
 The Codex skill is installed as `$triad` under `~/.codex/skills/triad`; use `/skills` to find it in Codex. It covers interactive reviews, CI dry runs, provider diagnostics, and approval-gated isolated fixes. The skills stop after the report and prohibit calling `triad fix` until the user separately approves the patch stage.
 
-The separate `$triad-easy` skill (Claude Code: `/triad-easy`) always starts reviews with `--easy-mode`: Claude Opus 5.5 and GPT-6.1 Sol, with Kimi/Cursor unchanged. It installs under each host's `skills/triad-easy` directory without replacing the regular `triad` skill. Both skills are standalone and share the same passive-review and approval rules.
+The separate `$triad-easy` skill (Claude Code: `/triad-easy`) always starts reviews with `--easy-mode`: Claude Opus 5.5 and GPT-6.1 Sol, with Kimi/Cursor and both parallel ZCode models unchanged. It installs under each host's `skills/triad-easy` directory without replacing the regular `triad` skill. Both skills are standalone and share the same passive-review and approval rules.
+
+The standalone `$triad-ultra` skill appears as **Triad Ultra** in Codex and uses `--ultra-mode`: Claude Opus 5.5 with Ultracode plus GPT-6 Astra with `ultra` reasoning and ordinary Fast processing, not Ultrafast. It installs to `skills/triad-ultra`; use `--host all` for the other supported hosts too. Easy and Ultra installation flags are mutually exclusive. All three skills keep the same approval boundaries.
 
 `--host all` writes all three skill directories, even if an agent is not installed yet. It does not install the agent applications. Cursor participates as a review provider, but the built-in skill installer does not currently install a Cursor skill. Re-running the command refreshes the skills from the installed Triad version, not from GitHub; update Triad first when you want newer skill instructions.
 
@@ -264,6 +358,6 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test
 ```
 
-The E2E suite uses four fake vendor CLIs. It exercises discovery, subscription-auth checks, parallel review, reducer selection, approval-gated fixing, API-key and GitHub-auth stripping, missing push remotes, protocol-violation rejection, and source-checkout isolation without consuming real model quota.
+The E2E suite uses fake vendor CLIs. It exercises discovery, subscription-auth checks, parallel review, reducer selection, approval-gated fixing, API-key and GitHub-auth stripping, missing push remotes, protocol-violation rejection, and source-checkout isolation without consuming real model quota. Fake-CLI coverage does not prove live provider authentication or model availability.
 
 An optional scheduled/manual workflow also reviews a fixed reverse-diff fixture from `dtolnay/anyhow#420` through OpenRouter. It is a live model oracle, not a production Triad provider: production adapters remain subscription-only. The workflow never runs for pull requests and skips the model call unless `OPENROUTER_API_KEY` is configured as a GitHub Actions secret.

@@ -9,10 +9,20 @@ pub enum ProviderKind {
     Codex,
     Kimi,
     Cursor,
+    Zcode,
+    #[serde(alias = "zcode-flash")]
+    ZcodeFlash,
 }
 
 impl ProviderKind {
-    pub const ALL: [Self; 4] = [Self::Claude, Self::Codex, Self::Kimi, Self::Cursor];
+    pub const ALL: [Self; 6] = [
+        Self::Claude,
+        Self::Codex,
+        Self::Kimi,
+        Self::Cursor,
+        Self::Zcode,
+        Self::ZcodeFlash,
+    ];
 
     pub fn as_str(self) -> &'static str {
         match self {
@@ -20,7 +30,13 @@ impl ProviderKind {
             Self::Codex => "codex",
             Self::Kimi => "kimi",
             Self::Cursor => "cursor",
+            Self::Zcode => "zcode",
+            Self::ZcodeFlash => "zcode_flash",
         }
+    }
+
+    pub fn is_zcode(self) -> bool {
+        matches!(self, Self::Zcode | Self::ZcodeFlash)
     }
 }
 
@@ -39,6 +55,8 @@ impl FromStr for ProviderKind {
             "codex" => Ok(Self::Codex),
             "kimi" => Ok(Self::Kimi),
             "cursor" | "cursor-agent" | "agent" => Ok(Self::Cursor),
+            "zcode" => Ok(Self::Zcode),
+            "zcode_flash" | "zcode-flash" => Ok(Self::ZcodeFlash),
             _ => anyhow::bail!("unknown provider '{value}'"),
         }
     }
@@ -48,6 +66,9 @@ impl FromStr for ProviderKind {
 #[serde(rename_all = "snake_case")]
 pub enum AuthState {
     Subscription,
+    /// Native subscription-only routing is enforced, but the vendor has no
+    /// non-inference status command. Only ZCode may defer login validation.
+    SubscriptionPending,
     ApiKey,
     NotAuthenticated,
     Unknown,
@@ -82,7 +103,9 @@ pub struct ProviderStatus {
 
 impl ProviderStatus {
     pub fn runnable(&self, now: DateTime<Utc>) -> bool {
-        if !self.enabled || self.binary.is_none() || self.auth != AuthState::Subscription {
+        let subscription_route = self.auth == AuthState::Subscription
+            || (self.provider.is_zcode() && self.auth == AuthState::SubscriptionPending);
+        if !self.enabled || self.binary.is_none() || !subscription_route {
             return false;
         }
         match self.usage {
@@ -103,6 +126,8 @@ pub struct ProviderLedgerEntry {
     pub last_success_at: Option<DateTime<Utc>>,
     pub last_error: Option<String>,
     pub retry_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub consecutive_quota_failures: u32,
 }
 
 impl Default for ProviderLedgerEntry {
@@ -114,6 +139,7 @@ impl Default for ProviderLedgerEntry {
             last_success_at: None,
             last_error: None,
             retry_at: None,
+            consecutive_quota_failures: 0,
         }
     }
 }
@@ -194,6 +220,8 @@ pub struct RunManifest {
     pub dry_run: bool,
     #[serde(default)]
     pub easy_mode: bool,
+    #[serde(default)]
+    pub ultra_mode: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -263,6 +291,63 @@ mod tests {
     use super::*;
 
     #[test]
+    fn zcode_slots_have_distinct_stable_names_and_flash_aliases() {
+        assert_eq!(ProviderKind::ALL.len(), 6);
+        let names: std::collections::HashSet<_> = ProviderKind::ALL
+            .into_iter()
+            .map(ProviderKind::as_str)
+            .collect();
+        assert_eq!(names.len(), ProviderKind::ALL.len());
+        for kind in ProviderKind::ALL {
+            assert_eq!(kind.as_str().parse::<ProviderKind>().unwrap(), kind);
+            assert_eq!(
+                serde_json::from_str::<ProviderKind>(&serde_json::to_string(&kind).unwrap())
+                    .unwrap(),
+                kind
+            );
+            assert_eq!(
+                kind.is_zcode(),
+                matches!(kind.as_str(), "zcode" | "zcode_flash")
+            );
+        }
+        for alias in ["zcode_flash", "zcode-flash", "ZCODE-FLASH"] {
+            assert_eq!(
+                alias.parse::<ProviderKind>().unwrap(),
+                ProviderKind::ZcodeFlash
+            );
+        }
+        assert_eq!(
+            serde_json::from_str::<ProviderKind>("\"zcode-flash\"").unwrap(),
+            ProviderKind::ZcodeFlash
+        );
+        assert_eq!(
+            serde_json::to_string(&ProviderKind::ZcodeFlash).unwrap(),
+            "\"zcode_flash\""
+        );
+    }
+
+    #[test]
+    fn old_manifests_default_to_normal_and_ultra_mode_round_trips() {
+        let value = serde_json::json!({
+            "id": "legacy-run",
+            "state": "queued",
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+            "request_path": "request.json",
+            "providers": [],
+            "degraded": false
+        });
+        let mut manifest: RunManifest = serde_json::from_value(value).unwrap();
+        assert!(!manifest.easy_mode);
+        assert!(!manifest.ultra_mode);
+        manifest.ultra_mode = true;
+        let decoded: RunManifest =
+            serde_json::from_value(serde_json::to_value(manifest).unwrap()).unwrap();
+        assert!(decoded.ultra_mode);
+        assert!(!decoded.easy_mode);
+    }
+
+    #[test]
     fn cooldown_becomes_runnable_after_reset() {
         let now = Utc::now();
         let status = ProviderStatus {
@@ -300,5 +385,37 @@ mod tests {
             retry_at: Some(now),
         };
         assert!(status.runnable(now));
+    }
+
+    #[test]
+    fn pending_subscription_auth_is_scoped_to_native_zcode_routes() {
+        let now = Utc::now();
+        let mut status = ProviderStatus {
+            provider: ProviderKind::Zcode,
+            enabled: true,
+            binary: Some("zcode".into()),
+            version: None,
+            auth: AuthState::SubscriptionPending,
+            auth_detail: None,
+            usage: UsageState::Unknown,
+            usage_source: "unknown".into(),
+            model: None,
+            last_success_at: None,
+            last_error: None,
+            retry_at: None,
+        };
+        for kind in ProviderKind::ALL {
+            status.provider = kind;
+            assert_eq!(status.runnable(now), kind.is_zcode());
+        }
+        status.provider = ProviderKind::Zcode;
+        for auth in [
+            AuthState::Unknown,
+            AuthState::ApiKey,
+            AuthState::NotAuthenticated,
+        ] {
+            status.auth = auth;
+            assert!(!status.runnable(now));
+        }
     }
 }
