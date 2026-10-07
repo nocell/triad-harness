@@ -151,7 +151,7 @@ if ultra:
     transcript=root/"projects"/"fake-ultra"/(session+".jsonl")
     transcript.parent.mkdir(parents=True,exist_ok=True)
     events=[
-        {{"type":"user","isMeta":True,"sessionId":session,"message":{{"role":"user","content":"<system-reminder>Ultracode is on: use workflows</system-reminder>"}}}},
+        {{"type":"attachment","isSidechain":False,"sessionId":session,"attachment":{{"type":"ultra_effort_enter","reminderType":"full"}}}},
         {{"type":"assistant","sessionId":session,"message":{{"role":"assistant","content":[{{"type":"tool_use","id":"workflow-1","name":"Workflow","input":{{"script":"await agent('read-only code check')"}}}}]}}}},
         {{"type":"user","sessionId":session,"message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"workflow-1","content":"Workflow launched in background. Task ID: workflow-1","is_error":False}}]}}}},
     ]

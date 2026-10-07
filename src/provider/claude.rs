@@ -449,6 +449,20 @@ fn attest_ultracode_transcript(
             continue;
         }
         let kind = row["type"].as_str().unwrap_or_default();
+        // Native transcripts retain runtime attachments before rendering them
+        // into isMeta reminders for the model. Only trust this session's
+        // top-level attachment, never matching text inside a user/tool message.
+        if kind == "attachment" {
+            match row["attachment"]["type"].as_str() {
+                Some("ultra_effort_enter") => active = true,
+                Some("ultra_effort_exit") => {
+                    active = false;
+                    launches.clear();
+                    confirmed = false;
+                }
+                _ => {}
+            }
+        }
         let content = &row["message"]["content"];
         if kind == "user" && row["isMeta"].as_bool() == Some(true) {
             let texts: Vec<&str> = if let Some(text) = content.as_str() {
@@ -705,6 +719,43 @@ mod tests {
             "message": {"content": "Ultracode is off — normal mode"}}));
         assert!(attest_ultracode_transcript(&transcript(&rows), session).is_err());
         assert!(attest_ultracode_transcript("not json", session).is_err());
+    }
+
+    #[test]
+    fn ultra_attestation_accepts_native_attachments_and_revokes_exited_sessions() {
+        let session = "current-session";
+        let mut good = ultra_rows(session);
+        good[0] = json!({"sessionId":session,"type":"attachment","isSidechain":false,
+            "attachment":{"type":"ultra_effort_enter","reminderType":"full"}});
+        assert!(attest_ultracode_transcript(&transcript(&good), session).is_ok());
+        good[0]["attachment"]["reminderType"] = json!("sparse");
+        assert!(attest_ultracode_transcript(&transcript(&good), session).is_ok());
+        for field in ["type", "sessionId", "isSidechain"] {
+            let mut rows = good.clone();
+            rows[0][field] = match field {
+                "type" => json!("user"),
+                "sessionId" => json!("other-session"),
+                _ => json!(true),
+            };
+            assert!(attest_ultracode_transcript(&transcript(&rows), session).is_err());
+        }
+        for missing in 1..good.len() {
+            let mut rows = good.clone();
+            rows.remove(missing);
+            assert!(attest_ultracode_transcript(&transcript(&rows), session).is_err());
+        }
+        let mut exited = good.clone();
+        exited.push(json!({"sessionId":session,"type":"attachment",
+            "attachment":{"type":"ultra_effort_exit"}}));
+        assert!(attest_ultracode_transcript(&transcript(&exited), session).is_err());
+        // Re-entering must not reuse workflow evidence from before the exit.
+        exited.push(good[0].clone());
+        assert!(attest_ultracode_transcript(&transcript(&exited), session).is_err());
+        exited.extend_from_slice(&good[1..]);
+        assert!(attest_ultracode_transcript(&transcript(&exited), session).is_ok());
+        let mut failed = good;
+        failed[2]["message"]["content"][0]["is_error"] = json!(true);
+        assert!(attest_ultracode_transcript(&transcript(&failed), session).is_err());
     }
 
     #[test]
