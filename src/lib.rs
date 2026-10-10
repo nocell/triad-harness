@@ -2,6 +2,7 @@ pub mod cli;
 pub mod config;
 pub mod git;
 pub mod model;
+pub mod packet;
 pub mod provider;
 pub mod report;
 pub mod run;

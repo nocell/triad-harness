@@ -140,7 +140,15 @@ s=json.loads(Path(settings).read_text())
 ultra="{ultra_mode}" == "true"
 expected=["Read","Glob","Grep"] + (["Workflow"] if ultra else [])
 assert a["triad-reviewer"]["tools"] == expected
-hook={{"last_assistant_message":json.dumps({{"findings":[]}})}}
+packet=Path('.triad-review')
+index=json.loads((packet/'changed-files.json').read_text())
+assert index['files'], 'review packet omitted changed files'
+assert '-base' not in (packet/'review.diff').read_text()
+assert '+bug' in (packet/'review.diff').read_text()
+entry=next(item for item in index['files'] if item['after']['path']=='file.txt')
+assert (packet/entry['before']['asset']).read_text() == 'base\n'
+assert (packet/entry['after']['asset']).read_text() == 'base\nbug\n'
+hook={{"last_assistant_message":json.dumps({{"review_status":"complete","limitations":[],"findings":[]}})}}
 if ultra:
     assert effort == "ultracode"
     assert s["ultracode"] is True and s["enableWorkflows"] is True and s["fastMode"] is False
@@ -216,9 +224,9 @@ PY
     [ $? -eq 0 ] || exit 102 ;;
 esac
 case "$all" in
-  *"Triad reducer"*) result='{{"findings":[{{"id":"TRIAD-001","verdict":"accepted","title":"Concrete bug","severity":"high","file":"file.txt","line":2,"rationale":"verified","evidence":"bug line","trigger":"read file","impact":"failure","suggested_fix":"replace bug","sources":["codex"]}}]}}' ;;
+  *"Triad reducer"*) result='{{"review_status":"complete","limitations":[],"findings":[{{"id":"TRIAD-001","verdict":"accepted","title":"Concrete bug","severity":"high","file":"file.txt","line":2,"rationale":"verified","evidence":"bug line","trigger":"read file","impact":"failure","suggested_fix":"replace bug","sources":["codex"]}}]}}' ;;
   *"Triad fixer"*) printf 'fixed\n' >> file.txt; result='{{"summary":"fixed","tests":[{{"command":"true","status":"passed"}}]}}' ;;
-  *) result='{{"findings":[{{"title":"Concrete bug","severity":"high","confidence":"high","category":"correctness","file":"file.txt","line":2,"claim":"bug","evidence":"bug line","trigger":"read file","impact":"failure","suggested_fix":"replace bug"}}]}}' ;;
+  *) result='{{"review_status":"complete","limitations":[],"findings":[{{"title":"Concrete bug","severity":"high","confidence":"high","category":"correctness","file":"file.txt","line":2,"claim":"bug","evidence":"bug line","trigger":"read file","impact":"failure","suggested_fix":"replace bug"}}]}}' ;;
 esac
 printf '%s' "$result" > "$final"
 printf '{{"type":"item.completed","item":{{"type":"agent_message","text":%s}}}}\n' "$(printf '%s' "$result" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')"
@@ -235,7 +243,7 @@ if [ "$1" = "doctor" ]; then echo 'Kimi doctor: membership authenticated'; exit 
 {guard_checks}
 all="$*"
 case " $all " in *" --model kimi-code/k3 "*) ;; *) echo 'Kimi model was not pinned to K3' >&2; exit 95 ;; esac
-echo '{{"type":"result","result":"{{\\"findings\\":[]}}","session_id":"kimi-1"}}'
+echo '{{"type":"result","result":"{{\\"review_status\\":\\"complete\\",\\"limitations\\":[],\\"findings\\":[]}}","session_id":"kimi-1"}}'
 "#
         ),
     );
@@ -260,7 +268,7 @@ done
 if [ -z "$CURSOR_CONFIG_DIR" ] || [ ! -f "$CURSOR_CONFIG_DIR/mcp.json" ]; then echo 'Cursor inherited global config or MCPs' >&2; exit 100; fi
 if [ ! -f "$(dirname "$CURSOR_CONFIG_DIR")/disabled-mcps.json" ]; then echo 'Cursor MCP audit file missing' >&2; exit 101; fi
 echo '{{"type":"system","subtype":"init","apiKeySource":"login","model":"Grok 4.7 High Fast","session_id":"cursor-1"}}'
-echo '{{"type":"result","result":"{{\\"findings\\":[]}}","session_id":"cursor-1"}}'
+echo '{{"type":"result","result":"{{\\"review_status\\":\\"complete\\",\\"limitations\\":[],\\"findings\\":[]}}","session_id":"cursor-1"}}'
 "#
         ),
     );
@@ -509,6 +517,15 @@ enabled = false
 
 #[test]
 fn reviewer_file_mutation_is_discarded_as_protocol_violation() {
+    reviewer_mutation_is_discarded(false);
+}
+
+#[test]
+fn reviewer_reediting_already_dirty_file_is_discarded_as_protocol_violation() {
+    reviewer_mutation_is_discarded(true);
+}
+
+fn reviewer_mutation_is_discarded(uncommitted: bool) {
     let temp = tempfile::tempdir().unwrap();
     let repo = temp.path().join("repo");
     let bin = temp.path().join("bin");
@@ -526,6 +543,15 @@ fn reviewer_file_mutation_is_discarded_as_protocol_violation() {
     let base = git(&repo, &["rev-parse", "HEAD"]);
     fs::write(repo.join("file.txt"), "base\nhead\n").unwrap();
     git(&repo, &["commit", "-am", "head"]);
+    if uncommitted {
+        fs::write(
+            repo.join("file.txt"),
+            "base\nhead\nuser-owned pending change\n",
+        )
+        .unwrap();
+    }
+    let source = fs::read_to_string(repo.join("file.txt")).unwrap();
+    let source_status = git(&repo, &["status", "--porcelain"]);
 
     executable(
         &bin.join("codex"),
@@ -536,7 +562,7 @@ if [ "$1" = "login" ]; then echo 'Logged in using ChatGPT'; exit 0; fi
 printf 'agent mutation\n' >> file.txt
 final=''
 while [ $# -gt 0 ]; do if [ "$1" = "--output-last-message" ]; then final="$2"; shift 2; else shift; fi; done
-result='{"findings":[{"title":"tempting result","severity":"high","confidence":"high","category":"correctness","file":"file.txt","line":2,"claim":"bug","evidence":"line","trigger":"read","impact":"failure","suggested_fix":"fix"}]}'
+result='{"review_status":"complete","limitations":[],"findings":[{"title":"tempting result","severity":"high","confidence":"high","category":"correctness","file":"file.txt","line":2,"claim":"bug","evidence":"line","trigger":"read","impact":"failure","suggested_fix":"fix"}]}'
 printf '%s' "$result" > "$final"
 printf '{"type":"item.completed","item":{"type":"agent_message","text":%s}}\n' "$(printf '%s' "$result" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')"
 "#,
@@ -560,15 +586,19 @@ binary = "{}"
     )
     .unwrap();
 
-    let output = Command::cargo_bin("triad")
-        .unwrap()
+    let mut command = Command::cargo_bin("triad").unwrap();
+    command
         .current_dir(&repo)
         .env("TRIAD_CONFIG_HOME", &config)
         .env("TRIAD_DATA_HOME", &data)
+        .arg("review");
+    if uncommitted {
+        command.arg("--uncommitted");
+    } else {
+        command.args(["--base", &base]);
+    }
+    let output = command
         .args([
-            "review",
-            "--base",
-            &base,
             "--providers",
             "codex",
             "--leader",
@@ -579,11 +609,8 @@ binary = "{}"
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(3));
-    assert_eq!(
-        fs::read_to_string(repo.join("file.txt")).unwrap(),
-        "base\nhead\n"
-    );
-    assert!(git(&repo, &["status", "--porcelain"]).is_empty());
+    assert_eq!(fs::read_to_string(repo.join("file.txt")).unwrap(), source);
+    assert_eq!(git(&repo, &["status", "--porcelain"]), source_status);
 
     let run_dir = fs::read_dir(data.join("runs"))
         .unwrap()
@@ -661,10 +688,10 @@ if [ "$1 $2" = "exec --help" ]; then echo '--json --ignore-user-config --strict-
 if [ "$1" = "login" ]; then echo 'Logged in using ChatGPT'; exit 0; fi
 final=''
 while [ $# -gt 0 ]; do if [ "$1" = "--output-last-message" ]; then final="$2"; shift 2; else shift; fi; done
-result='{"findings":[]}'
+result='{"review_status":"complete","limitations":[],"findings":[]}'
 printf '%s' "$result" > "$final"
 printf '{"type":"thread.started","thread_id":"clean-session"}\n'
-printf '{"type":"item.completed","item":{"type":"agent_message","text":"{\\"findings\\":[]}"}}\n'
+printf '{"type":"item.completed","item":{"type":"agent_message","text":"{\\"review_status\\":\\"complete\\",\\"limitations\\":[],\\"findings\\":[]}"}}\n'
 "#,
     );
     fs::write(

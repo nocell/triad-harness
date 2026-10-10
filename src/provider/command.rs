@@ -123,6 +123,28 @@ impl std::error::Error for ProviderFailure {}
 
 pub fn classify_failure(provider: ProviderKind, message: &str) -> ProviderFailure {
     let lowered = message.to_ascii_lowercase();
+    // The native CLI removes an unconnected Coding Plan from its registry,
+    // then fails model creation with this otherwise misleading message.
+    if provider.is_zcode()
+        && message.lines().any(|line| {
+            let Ok(event) = serde_json::from_str::<serde_json::Value>(line) else {
+                return false;
+            };
+            // Accept a native failure envelope or parse_stream's error payload,
+            // never a tool result quoting this string from reviewed source code.
+            if event.get("type").is_some() && event["type"] != "turn.failed" {
+                return false;
+            }
+            let payload = event.get("payload").unwrap_or(&event);
+            payload["error"]["code"] == "CONFIGURATION_ERROR"
+                && payload["error"]["message"] == "Select a model before continuing"
+        })
+    {
+        return ProviderFailure::auth(
+            provider,
+            "ZCode has no selectable Coding Plan model (Select a model before continuing). Desktop login alone may not connect the standalone CLI. Run `triad provider login zcode` once for both GLM reviewers; if it persists, check native Coding Plan/model availability. No API-key fallback was attempted.",
+        );
+    }
     if [
         "rate limit",
         "usage limit",
@@ -271,6 +293,32 @@ mod tests {
                 ProviderFailureKind::Authentication
             );
         }
+    }
+
+    #[test]
+    fn native_zcode_missing_selection_requires_login_not_quota_retry() {
+        for provider in [ProviderKind::Zcode, ProviderKind::ZcodeFlash] {
+            let failure = classify_failure(
+                provider,
+                r#"{"type":"turn.failed","payload":{"error":{"code":"CONFIGURATION_ERROR","message":"Select a model before continuing"},"turnPhase":"model_creation"},"traceId":"trace-429"}"#,
+            );
+            assert_eq!(failure.kind, ProviderFailureKind::Authentication);
+            assert!(failure.message.contains("triad provider login zcode"));
+            assert!(failure.retry_at.is_none());
+        }
+        assert_eq!(
+            classify_failure(ProviderKind::Codex, "Select a model before continuing").kind,
+            ProviderFailureKind::Spawn
+        );
+        let quoted_source = serde_json::json!({"type":"tool.result","payload":{"error":{"code":"CONFIGURATION_ERROR","message":"Select a model before continuing"}}});
+        assert_eq!(
+            classify_failure(
+                ProviderKind::Zcode,
+                &format!("{quoted_source}\n429 usage limit")
+            )
+            .kind,
+            ProviderFailureKind::Quota
+        );
     }
 
     #[test]

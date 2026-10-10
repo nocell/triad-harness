@@ -248,6 +248,17 @@ for key in ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'ZAI_API_KEY', 'ZHIPU_API_KEY
 if args == ['--version']:
     print('zcode fixture-native-contract')
     sys.exit(0)
+if args == ['login', 'zai']:
+    # Reproduce the app-bundle packaging requirement without OAuth or inference.
+    builtin = json.loads(Path(os.environ['ZCODE_BUILTIN_PROVIDER_CONFIG_FILE']).read_text())
+    personal = json.loads(Path(os.environ['ZCODE_PERSONAL_PROVIDER_CONFIG_FILE']).read_text())
+    assert builtin['config']['providerConfigRules']['providerRules'][0]['providerId'] == 'account:zai-individual-coding-plan'
+    assert personal['config']['defaultModelSelection']['providerId'] == 'account:zai-individual-coding-plan'
+    assert not Path('.env').read_text().strip(), 'login can inherit repository dotenv'
+    assert Path.cwd() != root / 'repo'
+    (root / 'native-login-completed').touch()
+    print('Login successful')
+    sys.exit(0)
 def arg(name):
     return args[args.index(name) + 1]
 assert '--model' not in args, 'native ZCode has no --model selector'
@@ -303,6 +314,9 @@ if role == 'reviewer':
     while not all((root / ('ready-' + s)).exists() for s in ['zcode', 'zcode_flash']):
         assert time.monotonic() < deadline, 'reviewers did not execute concurrently'
         time.sleep(.01)
+    if scenario in ['missing_selection', 'missing_selection_exit_zero'] and slot == 'zcode_flash':
+        print(json.dumps({'type': 'turn.failed', 'sessionId': session, 'payload': {'error': {'code': 'CONFIGURATION_ERROR', 'message': 'Select a model before continuing', 'detail': 'Model creation failed'}, 'turnPhase': 'model_creation'}}), flush=True)
+        sys.exit(0 if scenario.endswith('exit_zero') else 1)
     if scenario == 'quota' and slot == 'zcode_flash':
         print('Error: 429 usage limit reached for model', file=sys.stderr)
         sys.exit(1)
@@ -325,13 +339,47 @@ print(json.dumps({'type': 'session.updated', 'sessionId': session, 'payload': {'
 if scenario == 'malformed' and slot == 'zcode_flash':
     print('{"type":"result","sessionId":')
     sys.exit(0)
-unit = subprocess.run([sys.executable, '-B', '-m', 'unittest', 'test_eligibility.py'], capture_output=True, text=True)
-bug = 'return age > 18' in (snapshot / 'eligibility.py').read_text()
-assert (unit.returncode != 0) == bug, 'the test fixture does not demonstrate the claimed bug'
-finding = {'title': 'Adult age boundary rejected', 'severity': 'medium', 'confidence': 'high', 'category': 'correctness', 'file': 'eligibility.py', 'line': 2, 'claim': 'Age 18 is rejected', 'evidence': 'test_age_boundary fails: eligible(18) is False', 'trigger': 'eligible(18)', 'impact': 'Eligible adults cannot continue', 'suggested_fix': 'Use age >= 18'}
+# Emulate the native read-only Read/Grep/Glob capability: do not use a git
+# command or shell/test tool to obtain before/after context.
+packet = snapshot / '.triad-review'
+index = json.loads((packet / 'changed-files.json').read_text())
+manifest = json.loads((packet / 'packet.json').read_text())
+assert manifest['base_sha'] == index['base_sha']
+assert manifest['head_sha'] == index['head_sha']
+diff = (packet / 'review.diff').read_text()
+entry = next(item for item in index['files'] if item['after']['path'] == 'eligibility.py')
+before = (packet / entry['before']['asset']).read_text()
+after = (packet / entry['after']['asset']).read_text()
+assert 'return age >= 18' in before
+assert after == (snapshot / 'eligibility.py').read_text()
+bug = 'return age > 18' in after
+assert ('-    return age >= 18' in diff) == bug
+assert ('+    return age > 18' in diff) == bug
+finding = {'title': 'Adult age boundary rejected', 'severity': 'medium', 'confidence': 'high', 'category': 'correctness', 'file': 'eligibility.py', 'line': 2, 'claim': 'Age 18 is rejected', 'evidence': 'Changed age >= 18 to age > 18; eligible(18) is now False', 'trigger': 'eligible(18)', 'impact': 'Eligible adults cannot continue', 'suggested_fix': 'Use age >= 18'}
 if role == 'reducer' and bug:
-    finding = {'id': 'TRIAD-001', 'verdict': 'accepted', 'title': finding['title'], 'severity': 'medium', 'file': 'eligibility.py', 'line': 2, 'rationale': 'Confirmed by the existing boundary test', 'evidence': finding['evidence'], 'trigger': finding['trigger'], 'impact': finding['impact'], 'suggested_fix': finding['suggested_fix'], 'sources': ['zcode'] + (['zcode_flash'] if scenario == 'success' else [])}
-response = json.dumps({'findings': [finding] if bug else []})
+    finding = {'id': 'TRIAD-001', 'verdict': 'accepted', 'title': finding['title'], 'severity': 'medium', 'file': 'eligibility.py', 'line': 2, 'rationale': 'Confirmed by before/after code and the existing boundary assertion', 'evidence': finding['evidence'], 'trigger': finding['trigger'], 'impact': finding['impact'], 'suggested_fix': finding['suggested_fix'], 'sources': ['zcode'] + (['zcode_flash'] if scenario == 'success' else [])}
+response = json.dumps({'review_status': 'complete', 'limitations': ['No shell: existing tests were read, not executed'], 'findings': [finding] if bug else []})
+if scenario == 'partial_flash':
+    if role == 'reviewer' and slot == 'zcode_flash':
+        # Critical is deliberately a protocol-test marker, not a model-quality
+        # judgment about this tiny fixture's boundary condition.
+        finding['severity'] = 'critical'
+        response = json.dumps({'review_status': 'incomplete', 'limitations': ['Could not inspect an additional caller'], 'findings': [finding]})
+    elif role == 'reviewer':
+        response = json.dumps({'review_status': 'complete', 'limitations': [], 'findings': []})
+    else:
+        candidates = json.loads((packet / 'provider-results.json').read_text())
+        partial = json.loads(candidates['zcode_flash'])
+        assert partial['review_status'] == 'incomplete', 'partial provenance lost'
+        assert partial['limitations'] == ['Could not inspect an additional caller']
+        assert partial['findings'][0]['severity'] == 'critical', 'partial candidate lost'
+        finding['severity'] = 'critical'
+        finding['sources'] = ['zcode_flash']
+        response = json.dumps({'review_status': 'complete', 'limitations': [], 'findings': [finding]})
+if scenario == 'incomplete' and role == 'reviewer':
+    # A valid terminal event is not proof of adequate review. Model-side loss
+    # of diff access must not turn into a successful empty review.
+    response = json.dumps({'review_status': 'incomplete', 'limitations': ['review.diff could not be read by this session'], 'findings': []})
 print(json.dumps({'type': 'result', 'sessionId': session, 'response': response, 'projection': {'status': 'idle', 'turnCount': 1}}))
 "#;
 
@@ -401,6 +449,14 @@ fn native_zcode_provider_inspection_uses_no_auth_or_inference_probe() {
 fn native_zcode_parallel_review_and_reduce_handle_bug_and_clean_fixtures() {
     for clean in [false, true] {
         let fixture = Fixture::new(clean, "success");
+        // Independent test ground truth, not an invented shell capability of
+        // the native GLM reviewer. -B prevents creating bytecode in the repo.
+        let unit = StdCommand::new("python3")
+            .args(["-B", "-m", "unittest", "test_eligibility.py"])
+            .current_dir(&fixture.repo)
+            .output()
+            .unwrap();
+        assert_eq!(unit.status.success(), clean);
         let (run, manifest) = fixture.review();
         for (slot, model) in [("zcode", "GLM-5.3"), ("zcode_flash", "GLM-5.3-Flash")] {
             assert_eq!(record(&manifest, slot)["status"], "completed", "{manifest}");
@@ -444,6 +500,7 @@ fn native_zcode_parallel_review_and_reduce_handle_bug_and_clean_fixtures() {
         );
         let report = fs::read_to_string(run.join("report.md")).unwrap();
         assert_eq!(report.contains("TRIAD-001"), !clean);
+        assert!(report.contains("No shell: existing tests were read, not executed"));
         if !clean {
             assert_eq!(
                 findings["findings"][0]["sources"],
@@ -451,6 +508,69 @@ fn native_zcode_parallel_review_and_reduce_handle_bug_and_clean_fixtures() {
             );
         }
     }
+}
+
+#[test]
+fn native_zcode_incomplete_empty_results_never_produce_clean_review() {
+    let fixture = Fixture::new(true, "incomplete");
+    let output = fixture
+        .command()
+        .args([
+            "review",
+            "--base",
+            &fixture.base,
+            "--providers",
+            "zcode,zcode-flash",
+            "--leader",
+            "zcode",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(3));
+    let run = fixture.run_dir();
+    let manifest = json(run.join("manifest.json"));
+    assert_eq!(manifest["state"], "failed", "{manifest}");
+    for slot in ["zcode", "zcode_flash"] {
+        assert_ne!(record(&manifest, slot)["status"], "completed");
+        let error = record(&manifest, slot)["error"].as_str().unwrap();
+        assert!(error.contains("incomplete review"), "{error}");
+        assert!(error.contains("review.diff could not be read"), "{error}");
+    }
+    assert!(!run.join("findings.json").exists());
+    assert!(
+        !fixture
+            .temp
+            .path()
+            .join("trace-zcode-reducer.json")
+            .exists()
+    );
+    fixture.assert_source_untouched();
+}
+
+#[test]
+fn incomplete_reviewer_candidates_reach_reducer_without_claiming_full_coverage() {
+    let fixture = Fixture::new(false, "partial_flash");
+    let (run, manifest) = fixture.review();
+    assert_eq!(record(&manifest, "zcode")["status"], "completed");
+    assert_eq!(record(&manifest, "zcode_flash")["status"], "incomplete");
+    assert_eq!(manifest["degraded"], true);
+    let outputs = json(run.join("provider-results.json"));
+    let partial: Value = serde_json::from_str(outputs["zcode_flash"].as_str().unwrap()).unwrap();
+    assert_eq!(partial["review_status"], "incomplete");
+    assert_eq!(partial["findings"][0]["severity"], "critical");
+    let findings = json(run.join("findings.json"));
+    assert_eq!(findings["findings"][0]["severity"], "critical");
+    assert_eq!(findings["findings"][0]["verdict"], "accepted");
+    assert_eq!(
+        findings["findings"][0]["sources"],
+        serde_json::json!(["zcode_flash"])
+    );
+    let report = fs::read_to_string(run.join("report.md")).unwrap();
+    assert!(report.contains("Could not inspect an additional caller"));
+    assert!(report.contains("coverage is incomplete"));
+    assert!(report.contains("Severity: `critical`"));
+    assert!(!report.contains("all selected providers completed"));
 }
 
 #[test]
@@ -480,4 +600,40 @@ fn native_zcode_flash_quota_does_not_cancel_main_or_lose_its_cooldown() {
     assert_eq!(ledger["providers"]["zcode"]["usage"], "available");
     assert_eq!(ledger["providers"]["zcode_flash"]["usage"], "cooldown");
     assert!(ledger["providers"]["zcode_flash"]["retry_at"].is_string());
+}
+
+#[test]
+fn native_zcode_selection_failure_is_actionable_and_explicit_login_recovers() {
+    for scenario in ["missing_selection", "missing_selection_exit_zero"] {
+        let fixture = Fixture::new(false, scenario);
+        let (_, manifest) = fixture.review();
+        assert_eq!(record(&manifest, "zcode")["status"], "completed");
+        assert_eq!(record(&manifest, "zcode_flash")["status"], "failed");
+        let ledger = json(fixture.data.join("providers.json"));
+        let entry = &ledger["providers"]["zcode_flash"];
+        assert_eq!(entry["usage"], "unavailable");
+        assert_eq!(entry["usage_source"], "auth");
+        assert!(entry["retry_at"].is_null());
+        assert!(
+            entry["last_error"]
+                .as_str()
+                .unwrap()
+                .contains("triad provider login zcode")
+        );
+        assert!(!fixture.temp.path().join("native-login-completed").exists());
+
+        // An explicit login receives real catalog paths even in a bundled layout,
+        // and resets both slots' auth failures without a discovery/model probe.
+        fixture
+            .command()
+            .args(["provider", "login", "zcode-flash"])
+            .assert()
+            .success();
+        assert!(fixture.temp.path().join("native-login-completed").exists());
+        let ledger = json(fixture.data.join("providers.json"));
+        assert_eq!(ledger["providers"]["zcode_flash"]["usage"], "unknown");
+        assert!(ledger["providers"]["zcode_flash"]["last_error"].is_null());
+        assert_eq!(ledger["providers"]["zcode"]["usage"], "available");
+        fixture.assert_source_untouched();
+    }
 }

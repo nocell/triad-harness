@@ -204,19 +204,22 @@ pub async fn create_snapshot(
             }
         }
         for relative in &target.untracked_files {
+            anyhow::ensure!(
+                relative
+                    .components()
+                    .all(|part| matches!(part, std::path::Component::Normal(_))),
+                "invalid untracked snapshot path"
+            );
             let source = target.source_repo.join(relative);
             let dest = destination.join(relative);
             if let Some(parent) = dest.parent() {
                 fs::create_dir_all(parent)?;
             }
-            if source.is_dir() {
-                copy_dir(&source, &dest)?;
-            } else {
-                fs::copy(&source, &dest)
-                    .with_context(|| format!("copy untracked {}", relative.display()))?;
-            }
+            copy_snapshot_entry(&source, &dest)
+                .with_context(|| format!("copy untracked {}", relative.display()))?;
         }
     }
+    crate::packet::ensure_reserved_path_absent(destination)?;
     let triad_dir = destination.join(".triad-review");
     fs::create_dir_all(&triad_dir)?;
     fs::write(triad_dir.join("context.md"), context_markdown)?;
@@ -252,6 +255,30 @@ pub async fn status_signature(snapshot: &Path) -> Result<Vec<u8>> {
     let mut signature = git_bytes(snapshot, &["rev-parse", "HEAD"]).await?;
     signature.push(0);
     signature.extend(git_bytes(snapshot, &["status", "--porcelain=v1", "-z"]).await?);
+    // Porcelain alone misses a second edit to an already dirty reviewed file.
+    // Include bytes, without executing a repository-defined diff/text converter.
+    signature.push(0);
+    signature.extend(
+        git_bytes(
+            snapshot,
+            &["diff", "--no-ext-diff", "--no-textconv", "--binary", "HEAD"],
+        )
+        .await?,
+    );
+    signature.push(0);
+    signature.extend(
+        git_bytes(
+            snapshot,
+            &[
+                "diff",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--binary",
+                "--cached",
+            ],
+        )
+        .await?,
+    );
     Ok(signature)
 }
 
@@ -326,11 +353,25 @@ fn copy_dir(source: &Path, destination: &Path) -> Result<()> {
     for entry in fs::read_dir(source)? {
         let entry = entry?;
         let target = destination.join(entry.file_name());
-        if entry.file_type()?.is_dir() {
-            copy_dir(&entry.path(), &target)?;
-        } else {
-            fs::copy(entry.path(), target)?;
-        }
+        copy_snapshot_entry(&entry.path(), &target)?;
+    }
+    Ok(())
+}
+
+fn copy_snapshot_entry(source: &Path, destination: &Path) -> Result<()> {
+    let metadata = fs::symlink_metadata(source)?;
+    if metadata.file_type().is_symlink() {
+        // Preserve the link itself, never copy the contents of a path outside
+        // the reviewed checkout into a provider's snapshot or review packet.
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(fs::read_link(source)?, destination)?;
+        #[cfg(not(unix))]
+        anyhow::bail!("untracked symlink snapshots are unsupported on this platform");
+    } else if metadata.is_dir() {
+        copy_dir(source, destination)?;
+    } else {
+        anyhow::ensure!(metadata.is_file(), "unsupported untracked file type");
+        fs::copy(source, destination)?;
     }
     Ok(())
 }
@@ -512,5 +553,55 @@ mod tests {
             .output()
             .unwrap();
         assert!(source_status.stdout.is_empty());
+
+        fs::write(snapshot.join("file.txt"), "first dirty contents\n").unwrap();
+        let first_status = git_bytes(&snapshot, &["status", "--porcelain=v1", "-z"])
+            .await
+            .unwrap();
+        let first_signature = status_signature(&snapshot).await.unwrap();
+        fs::write(snapshot.join("file.txt"), "second dirty contents\n").unwrap();
+        assert_eq!(
+            first_status,
+            git_bytes(&snapshot, &["status", "--porcelain=v1", "-z"])
+                .await
+                .unwrap()
+        );
+        assert_ne!(first_signature, status_signature(&snapshot).await.unwrap());
+
+        #[cfg(unix)]
+        {
+            let outside = temp.path().join("not-review-input.txt");
+            fs::write(&outside, "must not be copied into a snapshot").unwrap();
+            let link = source.join("untracked-link");
+            std::os::unix::fs::symlink(&outside, &link).unwrap();
+            let mut uncommitted = target.clone();
+            uncommitted.base_sha = uncommitted.head_sha.clone();
+            uncommitted.uncommitted = true;
+            uncommitted.untracked_files = vec!["untracked-link".into()];
+            let snapshot = temp.path().join("uncommitted-snapshot");
+            create_snapshot(&uncommitted, &snapshot, "context")
+                .await
+                .unwrap();
+            assert!(
+                fs::symlink_metadata(snapshot.join("untracked-link"))
+                    .unwrap()
+                    .file_type()
+                    .is_symlink()
+            );
+            assert_eq!(
+                fs::read_link(snapshot.join("untracked-link")).unwrap(),
+                outside
+            );
+            assert_eq!(fs::read_link(link).unwrap(), outside);
+            let diff = diff_for_target(&snapshot, &uncommitted).await.unwrap();
+            assert!(!String::from_utf8_lossy(&diff).contains("must not be copied"));
+            crate::packet::build(&snapshot, &uncommitted, &diff, "context")
+                .await
+                .unwrap();
+            assert_eq!(
+                fs::read(snapshot.join(".triad-review/after/0001.txt")).unwrap(),
+                outside.as_os_str().as_encoded_bytes()
+            );
+        }
     }
 }

@@ -326,6 +326,19 @@ fn invocation(
     Ok(spec)
 }
 
+/// Explicit user-requested native login. Reuse the supported catalog paths and
+/// environment isolation: bundled CLI login cannot always locate its own catalog.
+/// Only ZCode reads/writes its credentials; its default model stays run-local.
+pub(super) fn login_command(
+    adapter: &ProviderAdapter,
+    directory: &Path,
+) -> Result<tokio::process::Command> {
+    std::fs::write(directory.join(".env"), b"")?;
+    let mut spec = invocation(adapter, directory, &directory.join("state"), "")?;
+    spec.args = vec!["login".into(), "zai".into()];
+    Ok(spec.into_tokio_command())
+}
+
 pub(super) async fn inspect_auth(adapter: &ProviderAdapter) -> (AuthState, Option<String>) {
     // Headless `/model` is not a metadata command in all official releases:
     // some dispatch it through submitPrompt. Never probe it for discovery.

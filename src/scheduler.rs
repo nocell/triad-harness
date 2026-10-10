@@ -150,9 +150,21 @@ async fn login(value: &str) -> Result<i32> {
         ProviderKind::Cursor => &["login"],
         ProviderKind::Zcode | ProviderKind::ZcodeFlash => &["login", "zai"],
     };
-    let mut command = Command::new(&adapter.binary);
+    // Keep the isolated catalog alive until interactive login finishes. No
+    // repository dotenv or inherited provider override may redirect this login.
+    let login_directory = if provider.is_zcode() {
+        Some(tempfile::tempdir()?)
+    } else {
+        None
+    };
+    let mut command = if let Some(directory) = &login_directory {
+        provider::zcode_login_command(&adapter, directory.path())?
+    } else {
+        let mut command = Command::new(&adapter.binary);
+        command.args(args);
+        command
+    };
     command
-        .args(args)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());

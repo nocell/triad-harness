@@ -217,6 +217,8 @@ pub struct RunManifest {
     pub report_path: Option<PathBuf>,
     pub patch_path: Option<PathBuf>,
     #[serde(default)]
+    pub review_packet_sha256: Option<String>,
+    #[serde(default)]
     pub dry_run: bool,
     #[serde(default)]
     pub easy_mode: bool,
@@ -246,8 +248,22 @@ pub struct RawFinding {
     pub suggested_fix: String,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewStatus {
+    // Old persisted reports did not record completeness. New model responses
+    // are validated against a strict schema before deserialization.
+    #[default]
+    Complete,
+    Incomplete,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FindingsEnvelope {
+    #[serde(default)]
+    pub review_status: ReviewStatus,
+    #[serde(default)]
+    pub limitations: Vec<String>,
     #[serde(default)]
     pub findings: Vec<RawFinding>,
 }
@@ -275,6 +291,10 @@ pub struct ReducedFinding {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ReductionEnvelope {
+    #[serde(default)]
+    pub review_status: ReviewStatus,
+    #[serde(default)]
+    pub limitations: Vec<String>,
     #[serde(default)]
     pub findings: Vec<ReducedFinding>,
 }

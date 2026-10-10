@@ -22,6 +22,10 @@ Verify that SKILL.md exists and has matching content across hosts for each skill
 - ~/.claude/skills/triad-ultra/
 - ~/.kimi-code/skills/triad-ultra/
 Also verify agents/openai.yaml exists under all three Codex skill directories.
+Check that each standalone skill explains the .triad-review packet, complete versus
+incomplete analysis, a single progress monitor, capability-aware existing tests,
+and the separate approval gates for fixes and publication. If these instructions
+are absent, update Triad from the official repository and reinstall the skills.
 The skills intentionally differ: Triad Easy uses --easy-mode (Opus 5.5 and
 GPT-6.1 Sol); Triad Ultra uses --ultra-mode (Opus 5.5 Ultracode and GPT-6 Astra
 with ultra reasoning plus ordinary Fast, not Ultrafast); regular Triad keeps

@@ -77,6 +77,8 @@ ZCode runs with a restricted native account/model catalog, isolated session stor
 
 The bundled CLI has no non-inference authentication-status command. ZCode therefore reports `subscription_pending`: Triad has locally validated the enforced Coding Plan-only route, not a valid login. Only these two adapters may defer authentication to the actual review task. A successful native account/model event confirms the manifest's auth source; failed login never falls back to API billing. `providers` and `doctor` do not submit `/model list` or another prompt as a probe.
 
+If ZCode fails with `Select a model before continuing`, the native CLI has no selectable Coding Plan model; a desktop OAuth login alone may leave its standalone account connection incomplete. Run `triad provider login zcode` explicitly once for both GLM reviewers, then retry the review. Triad supplies the bundled catalog path during login, keeps model selection isolated, and leaves credential storage to ZCode. This failure is reported as unavailable/auth, not a quota cooldown or successful review. If login does not resolve it, check model access in the native CLI; do not copy tokens or switch to API billing.
+
 Triad never reads vendor OAuth tokens and removes known API-key variables from every child process. Reviewers operate in independent disposable Git clones; the source checkout is not modified.
 
 Cursor reviewers trust only the already-created disposable snapshot, run in read-only Ask mode with sandboxing enabled, and receive project-local deny rules for writes, secrets, destructive commands, network tools, and external CLIs. Global MCP servers are disabled for the run's snapshot and repository MCP configurations are replaced with empty run-local configs. The separately approved fixer allows writes only inside its disposable snapshot. Triad never passes Cursor `--force`, `-f`, or `--yolo`.
@@ -85,9 +87,11 @@ Triad does not enforce agent CLI version numbers. Versions are recorded for diag
 
 On macOS, Triad prefers the official Codex binary bundled with ChatGPT when it supports the required capabilities, otherwise it tries the global `codex`; an explicit `[providers.codex].binary` still wins and is checked without fallback. Codex runs with `--ignore-user-config`, user hooks disabled, the explicit model/effort pair, ChatGPT subscription auth, and a role-appropriate sandbox. Default/Easy use Standard (`service_tier="default"`, Fast disabled); Ultra explicitly enables Fast (`service_tier="fast"`).
 
-Reviewers are strictly passive. Their prompts forbid editing or deleting files, commits, pushes, branches, tags, GitHub comments/reviews/issues, messages, deployments, and all other external actions. They may only inspect code, propose findings, and run existing local unit tests or read-only checks inside their disposable snapshots. Triad also removes each snapshot's Git remote, isolates Git/GitHub credentials, and discards any result whose snapshot files or HEAD changed.
+Reviewers are strictly passive. Their prompts forbid editing or deleting files (including documentation, instructions, skills, and memory), commits, pushes, branches, tags, GitHub comments/reviews/issues, messages, deployments, and all other external actions. They may only inspect code, propose findings, and run supported existing local unit tests or read-only checks inside their disposable snapshots. They must not install dependencies, bootstrap environments, or create/update lockfiles to make a test run. Missing tools or dependencies are reported as limitations. Triad also removes each snapshot's Git remote, isolates Git/GitHub credentials, and discards any result whose snapshot files or HEAD changed.
 
 Codex receives an additional anti-overengineering prompt at review, reduce, and fix stages: hypothetical reuse, extensibility, consistency, and textbook DRY are not findings, while valid issues are reduced to the smallest root-cause change that fits the existing design.
+
+The lazy-senior policy means **thorough investigation and minimal fixes**, not shallow review. A meaningful medium-severity regression is worth reporting even if it need not block a merge. Findings need a reachable trigger, concrete impact, and code evidence; missing tests alone or speculative refactors do not qualify.
 
 ## Install
 
@@ -264,10 +268,47 @@ and agent definition; repository and user settings are not inherited. Reviewer
 status and quota failures are saved as each provider finishes, while other reviewers
 continue.
 
-Every provider receives the same explicit JSON output contract. Triad validates
-reviewer, reducer and fixer responses locally: a missing `findings` field or an
-invalid verdict is an error, never a clean review. Failed reduction produces an
-explicit incomplete report, exits with code `3`, and cannot enter the fix stage.
+### Review packet and evidence boundaries
+
+Each reviewer and reducer receives the same before/after evidence in its own
+disposable snapshot:
+
+```text
+.triad-review/
+  packet.json         # exact revisions, asset sizes and SHA-256 hashes
+  context.md          # target revisions, scope, and review instructions
+  review.diff         # full diff of the captured target
+  changed-files.json  # changed-path index
+  before/             # available base versions of changed files
+  after/              # frozen changed versions
+```
+
+Current versions remain in the snapshot. The packet is generated from the
+captured target, not a moving branch, and treated as immutable review input.
+Triad validates packet and diff availability before provider calls; missing,
+unreadable, or inconsistent evidence fails setup rather than becoming a clean
+review. Reviewers can use their read tools directly, without needing shell
+access to `git diff`. Binary files, deletions, and unavailable evidence still
+need explicit attention; a packet does not guarantee every behavior is testable.
+
+Every provider receives the same explicit JSON output contract. Reviewer and
+reducer responses include `review_status` (`complete` or `incomplete`),
+`limitations`, and `findings`. Triad validates these responses locally: missing
+required fields or an invalid verdict are errors, never clean reviews. An empty
+`findings` array with incomplete analysis is **not** a clean verdict. Failed or
+incomplete reduction produces an explicit incomplete report, exits with code
+`3`, and cannot enter the fix stage.
+
+Valid partial findings are not discarded: incomplete reviewers' candidates and
+limitations reach Reduce without counting as complete coverage. If reduction
+itself is incomplete, its candidates remain explicitly unverified `needs-human`
+items alongside the saved reviewer evidence. Missing context never becomes a
+claim that the code is clean.
+
+Tests depend on each adapter's capabilities. Read-only Claude and ZCode sessions
+must not claim shell/test execution; other reviewers may run supported existing
+tests without modifying source or preparing a new environment. Reports distinguish
+limitations and agent-reported test results from independently observed checks.
 
 After Map finishes, `triad resume <run-id> --json` retries reduction using saved
 reviewer results and the original base/head and provider cohort, without repeating successful model
@@ -279,6 +320,14 @@ During provider calls, the worker refreshes its heartbeat every ten seconds.
 `review --detach --json` and `resume --detach --json` return a JSON object with
 `run_id` and `pid`; without `--json`, detached commands print the run ID.
 Provider logs retain full secret-redacted output, while diagnostics remain bounded.
+
+Use one monitor per run: `triad follow <run-id> --interval 30` prints plain-text
+progress only when it changes, or check `triad status <run-id> --json` as needed.
+Avoid a second parallel polling loop or repeated full JSON manifests. A finished
+normal review requires `awaiting_approval`, a reducer report, and no run error;
+dry runs finish at `completed`. Always inspect completeness and degraded coverage
+before interpreting an empty findings list. Follow-up requests should reuse the
+same run; changed revisions require a new review.
 
 Repeated quota errors without a reported reset use an observed exponential
 cooldown (15, 30, 60 minutes, up to six hours with the default configuration).
@@ -359,5 +408,29 @@ cargo test
 ```
 
 The E2E suite uses fake vendor CLIs. It exercises discovery, subscription-auth checks, parallel review, reducer selection, approval-gated fixing, API-key and GitHub-auth stripping, missing push remotes, protocol-violation rejection, and source-checkout isolation without consuming real model quota. Fake-CLI coverage does not prove live provider authentication or model availability.
+
+The packet suite checks committed and uncommitted inputs, renames/deletions, binary
+files, symlinks, missing/corrupt assets, tampering, and checkpoint recovery. The
+subscription E2E fixture has both a known boundary bug and a behavior-preserving
+change to catch false positives:
+
+```bash
+# CI-safe fixture validation: no model requests or subscription usage.
+node scripts/e2e-subscriptions.mjs --fixtures-only
+
+# Opt-in live test: uses existing native subscription logins and consumes quota.
+cargo build --locked
+TRIAD_BIN="$PWD/target/debug/triad" node scripts/e2e-subscriptions.mjs
+# Or limit the live test to selected providers:
+TRIAD_BIN="$PWD/target/debug/triad" node scripts/e2e-subscriptions.mjs --providers codex,zcode,zcode_flash
+# Re-run just one scenario without repeating the other model calls:
+TRIAD_BIN="$PWD/target/debug/triad" node scripts/e2e-subscriptions.mjs --scenario clean
+```
+
+Live testing makes no installation, login, publication, or fix requests. It checks
+each completed reviewer's findings, the reducer verdict, frozen revision metadata,
+and the untouched source checkout. It prints unavailable/failed providers as
+degraded coverage and exits `3`; passing reviewers do not prove the skipped providers work.
+Triad's `--dry-run` still runs inference: only `--fixtures-only` avoids model calls.
 
 An optional scheduled/manual workflow also reviews a fixed reverse-diff fixture from `dtolnay/anyhow#420` through OpenRouter. It is a live model oracle, not a production Triad provider: production adapters remain subscription-only. The workflow never runs for pull requests and skips the model call unless `OPENROUTER_API_KEY` is configured as a GitHub Actions secret.

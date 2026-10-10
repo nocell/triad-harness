@@ -24,6 +24,111 @@ fn cursor_install_requires_confirmation() {
 }
 
 #[test]
+fn each_standalone_skill_installs_the_packet_and_completion_contract() {
+    use clap::Parser;
+    use triad::cli::Cli;
+
+    for (name, mode) in [
+        ("triad", None),
+        ("triad-easy", Some("--easy-mode")),
+        ("triad-ultra", Some("--ultra-mode")),
+    ] {
+        let home = tempfile::tempdir().unwrap();
+        let untouched = home.path().join(".codex/config.toml");
+        std::fs::create_dir_all(untouched.parent().unwrap()).unwrap();
+        std::fs::write(&untouched, "# user configuration\n").unwrap();
+
+        let mut args = vec!["install-skill", "--host", "all"];
+        if let Some(mode) = mode {
+            args.push(mode);
+        }
+        Command::cargo_bin("triad")
+            .unwrap()
+            .env("HOME", home.path())
+            .args(&args)
+            .assert()
+            .code(2);
+        for host in [".codex", ".claude", ".kimi-code"] {
+            assert!(!home.path().join(host).join("skills").exists());
+        }
+        args.push("--yes");
+        Command::cargo_bin("triad")
+            .unwrap()
+            .env("HOME", home.path())
+            .args(args)
+            .assert()
+            .success();
+
+        let mut instructions = Vec::new();
+        for host in [".codex", ".claude", ".kimi-code"] {
+            let root = home.path().join(host).join("skills");
+            assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+            let text = std::fs::read_to_string(root.join(name).join("SKILL.md")).unwrap();
+            let mut sections = text.splitn(3, "---\n");
+            assert_eq!(sections.next(), Some(""));
+            let frontmatter = sections.next().unwrap();
+            assert!(
+                frontmatter
+                    .lines()
+                    .any(|line| line == format!("name: {name}"))
+            );
+            assert!(frontmatter.lines().any(|line| {
+                line.strip_prefix("description: ")
+                    .is_some_and(|description| !description.trim().is_empty())
+            }));
+            let body = sections.next().unwrap();
+            // Operational invariants matter for every independently installed preset.
+            for required in [
+                ".triad-review/context.md",
+                ".triad-review/review.diff",
+                ".triad-review/changed-files.json",
+                ".triad-review/before/",
+                "review_status=incomplete",
+                "`limitations`",
+                "an existing reducer report, and no run error",
+                "medium-severity regressions even when they need not block a merge",
+                "not a shallow search",
+                "lockfile creation",
+                "agent-reported tests",
+                "separate explicit user approval",
+                "instructions, skills, or memory",
+            ] {
+                assert!(body.contains(required), "{name}/{host} missing {required}");
+            }
+            assert!(!body.contains("block the merge"));
+            assert!(!body.contains("triad follow <run-id> --json"));
+
+            // Keep the recommended monitor executable, not a fictional wait API.
+            let monitor = body
+                .split('`')
+                .find(|code| code.starts_with("triad follow "))
+                .unwrap();
+            assert!(Cli::try_parse_from(monitor.split_whitespace()).is_ok());
+            let check = body
+                .split('`')
+                .find(|code| code.starts_with("triad status "))
+                .unwrap();
+            assert!(Cli::try_parse_from(check.split_whitespace()).is_ok());
+            instructions.push(text);
+        }
+        assert!(instructions.windows(2).all(|pair| pair[0] == pair[1]));
+        assert_eq!(
+            std::fs::read_to_string(untouched).unwrap(),
+            "# user configuration\n"
+        );
+        let metadata = std::fs::read_to_string(
+            home.path()
+                .join(".codex/skills")
+                .join(name)
+                .join("agents/openai.yaml"),
+        )
+        .unwrap();
+        assert!(metadata.contains(&format!("${name} ")));
+        assert!(metadata.contains("allow_implicit_invocation: true"));
+    }
+}
+
+#[test]
 fn easy_skill_installs_alongside_regular_skill_for_all_hosts() {
     let home = tempfile::tempdir().unwrap();
     Command::cargo_bin("triad")

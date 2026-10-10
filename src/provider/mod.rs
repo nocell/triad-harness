@@ -3,6 +3,13 @@ mod claude_trust;
 mod command;
 mod zcode;
 
+pub(crate) fn zcode_login_command(
+    adapter: &ProviderAdapter,
+    directory: &Path,
+) -> Result<tokio::process::Command> {
+    zcode::login_command(adapter, directory)
+}
+
 use crate::{
     config::Config,
     model::{AgentRole, AuthState, ProviderKind, ProviderStatus},

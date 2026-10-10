@@ -32,6 +32,8 @@ jobs:
         working-directory: npm
       - name: Verify public PR E2E fixture
         run: node scripts/e2e-openrouter.mjs --fixture-only
+      - name: Verify subscription E2E bug and clean fixtures without model calls
+        run: node scripts/e2e-subscriptions.mjs --fixtures-only
       - name: Verify Homebrew formula renderer
         run: |
           temporary="$(mktemp -d)"
